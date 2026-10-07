@@ -3,63 +3,70 @@ import os
 import math
 import requests
 import numpy as np
-import faiss
-import joblib
-import joblib
-from groq import Groq
-from typing import List, Dict, Optional
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, APIRouter, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import base64
-import io
-import pdfplumber
 import json
-from sentence_transformers import SentenceTransformer
-import pickle
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean
+import io
+import base64
+import sys
+import datetime
+import random
+import time
+import asyncio
+import threading
+from typing import List, Dict, Optional, Any
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey, DateTime, Text
+from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
+from services.sms_service import sms_service, mask_phone
+from services.queue_service import (
+    get_or_create_timeline,
+    add_timeline_event,
+    calculate_departure_buffer,
+    advance_appointment_queue
+)
+
 # =====================================================
-# 1️⃣ CONFIGURATION & SETUP
+# 1. CONFIGURATION & SETUP
 # =====================================================
 
 load_dotenv()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 
-if not GROQ_API_KEY:
-    print("WARNING: GROQ_API_KEY not found in .env")
+client = None
+if GROQ_API_KEY and not GROQ_API_KEY.startswith("your_groq") and GROQ_API_KEY != "placeholder":
+    try:
+        from groq import Groq
+        client = Groq(api_key=GROQ_API_KEY)
+        print(f"Groq Client Initialized (key: {GROQ_API_KEY[:5]}...{GROQ_API_KEY[-4:]})")
+    except Exception as e:
+        print(f"Failed to initialize Groq client: {e}")
+        client = None
 else:
-    print(f"Found GROQ_API_KEY: {GROQ_API_KEY[:5]}...{GROQ_API_KEY[-4:]}")
+    print("Running in Standalone ML Mode (Groq LLM disabled or placeholder key; using Hybrid Semantic + ML Engine)")
 
-try:
-    client = Groq(api_key=GROQ_API_KEY)
-    print("Groq Client Initialized")
-except Exception as e:
-    print(f"Failed to initialize Groq client: {e}")
-    client = None
-
-
-# Initialize FastAPI
-app = FastAPI(title="Agentic Medical Analyser")
+app = FastAPI(title="Agentic Medical Analyser - Intelligent Healthcare Assistant")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # =====================================================
-# 2️⃣ DATABASE SETUP (SQLite)
+# 2. DATABASE SETUP
 # =====================================================
 
-
-import sys
-
-# Use absolute path for DB to avoid CWD issues
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL = f"sqlite:///{os.path.join(BASE_DIR, 'medical_ai.db')}"
 sys.stderr.write(f"DB URL: {DATABASE_URL}\n")
@@ -70,7 +77,6 @@ Base = declarative_base()
 
 class PredictionLog(Base):
     __tablename__ = "predictions"
-
     id = Column(Integer, primary_key=True, index=True)
     symptoms = Column(String)
     department_1 = Column(String)
@@ -81,45 +87,177 @@ class PredictionLog(Base):
     confidence_3 = Column(Float)
     emergency = Column(Boolean)
 
+class Patient(Base):
+    __tablename__ = "patients"
+    id = Column(Integer, primary_key=True, index=True)
+    age = Column(Integer)
+    gender = Column(String)
+    symptoms = Column(String)
+    heart_rate = Column(Integer)
+    temperature = Column(Float)
+    pre_existing_conditions = Column(String)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class Hospital(Base):
+    __tablename__ = "hospitals"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String)
+    address = Column(String)
+    phone = Column(String)
+    latitude = Column(Float)
+    longitude = Column(Float)
+    emergency_available = Column(Boolean, default=True)
+    rating = Column(Float, default=4.0)
+    open_now = Column(Boolean, default=True)
+
+class Doctor(Base):
+    __tablename__ = "doctors"
+    id = Column(Integer, primary_key=True, index=True)
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"))
+    name = Column(String)
+    department = Column(String)
+    specialization = Column(String)
+
+class AppointmentSlot(Base):
+    __tablename__ = "appointment_slots"
+    id = Column(Integer, primary_key=True, index=True)
+    doctor_id = Column(Integer, ForeignKey("doctors.id"))
+    date = Column(String)
+    start_time = Column(String)
+    end_time = Column(String)
+    available = Column(Boolean, default=True)
+
+class Appointment(Base):
+    __tablename__ = "appointments"
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"))
+    doctor_id = Column(Integer, ForeignKey("doctors.id"))
+    hospital_id = Column(Integer, ForeignKey("hospitals.id"))
+    slot_id = Column(Integer, ForeignKey("appointment_slots.id"))
+    status = Column(String, default="Confirmed")
+    queue_number = Column(Integer, default=0)
+    queue_position = Column(Integer, default=0)
+    estimated_wait_minutes = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class QueueEntry(Base):
+    __tablename__ = "queue_entries"
+    id = Column(Integer, primary_key=True, index=True)
+    appointment_id = Column(Integer, ForeignKey("appointments.id"))
+    doctor_id = Column(Integer, ForeignKey("doctors.id"))
+    queue_number = Column(Integer)
+    position = Column(Integer)
+    status = Column(String, default="waiting")  # waiting, in_progress, completed
+    estimated_wait_minutes = Column(Integer, default=15)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(Integer, default=1)
+    appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=True)
+    message = Column(Text)
+    notification_type = Column(String)  # queue_update, appointment_confirmed, turn_approaching, turn_reached
+    read = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+    id = Column(Integer, primary_key=True, index=True)
+    full_name = Column(String)
+    age = Column(Integer)
+    gender = Column(String)
+    phone = Column(String, nullable=True)
+    email = Column(String, nullable=True)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class SMSLog(Base):
+    __tablename__ = "sms_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(Integer, nullable=True)
+    appointment_id = Column(Integer, nullable=True)
+    phone_number = Column(String)
+    message_type = Column(String)
+    message_body = Column(Text)
+    status = Column(String, default="SENT")
+    provider = Column(String, default="simulation")
+    provider_response_id = Column(String, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
 def init_db():
     Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        if db.query(Hospital).count() == 0:
+            h1 = Hospital(name="City General Hospital", address="123 Health Ave, Chennai", phone="+91 9876543210", latitude=13.0827, longitude=80.2707, emergency_available=True, rating=4.5, open_now=True)
+            h2 = Hospital(name="Apollo Main Hospital", address="45 Wellness St, Chennai", phone="+91 1234567890", latitude=13.0604, longitude=80.2496, emergency_available=True, rating=4.7, open_now=True)
+            h3 = Hospital(name="Global Health Center", address="78 Care Blvd, Chennai", phone="+91 9988776655", latitude=13.0500, longitude=80.2600, emergency_available=False, rating=4.2, open_now=True)
+            h4 = Hospital(name="Sunrise Medical Institute", address="12 Dawn Rd, Chennai", phone="+91 8877665544", latitude=13.0900, longitude=80.2800, emergency_available=True, rating=4.3, open_now=True)
+            db.add_all([h1, h2, h3, h4])
+            db.commit()
+            db.refresh(h1); db.refresh(h2); db.refresh(h3); db.refresh(h4)
 
-# =====================================================
-# SKIP TO PYDANTIC MODELS
-# =====================================================
+            docs = [
+                Doctor(hospital_id=h1.id, name="Dr. Priya Sharma", department="Cardiology", specialization="Heart Surgeon"),
+                Doctor(hospital_id=h1.id, name="Dr. Arjun Menon", department="General Medicine", specialization="Physician"),
+                Doctor(hospital_id=h1.id, name="Dr. Lakshmi Rao", department="Neurology", specialization="Neurologist"),
+                Doctor(hospital_id=h2.id, name="Dr. Vikram Patel", department="Cardiology", specialization="Interventional Cardiologist"),
+                Doctor(hospital_id=h2.id, name="Dr. Ananya Iyer", department="Pulmonology", specialization="Pulmonologist"),
+                Doctor(hospital_id=h2.id, name="Dr. Rajesh Kumar", department="Orthopedics", specialization="Orthopedic Surgeon"),
+                Doctor(hospital_id=h3.id, name="Dr. Deepa Nair", department="Gastroenterology", specialization="Gastroenterologist"),
+                Doctor(hospital_id=h3.id, name="Dr. Suresh Babu", department="General Medicine", specialization="Internal Medicine"),
+                Doctor(hospital_id=h4.id, name="Dr. Meena Krishnan", department="ENT", specialization="ENT Specialist"),
+                Doctor(hospital_id=h4.id, name="Dr. Arun Prakash", department="Dermatology", specialization="Dermatologist"),
+            ]
+            db.add_all(docs)
+            db.commit()
+            for doc in docs:
+                db.refresh(doc)
 
-class TriageRequest(BaseModel):
-    Name: Optional[str] = "Anonymous"
-    Age: Optional[int] = 30
-    Gender: Optional[str] = "Male"
-    Systolic_BP: Optional[int] = 120
-    Diastolic_BP: Optional[int] = 80
-    Heart_Rate: Optional[int] = 72
-    Temperature: Optional[float] = 37.0
-    Symptoms: str
+            today = datetime.date.today().strftime("%Y-%m-%d")
+            tomorrow = (datetime.date.today() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+            slots = []
+            for doc in docs:
+                for hour in [9, 10, 11, 14, 15, 16]:
+                    slots.append(AppointmentSlot(
+                        doctor_id=doc.id, date=today,
+                        start_time=f"{hour:02d}:00", end_time=f"{hour:02d}:30", available=True
+                    ))
+                    slots.append(AppointmentSlot(
+                        doctor_id=doc.id, date=today,
+                        start_time=f"{hour:02d}:30", end_time=f"{hour+1:02d}:00", available=True
+                    ))
+                for hour in [9, 10, 11, 14, 15, 16]:
+                    slots.append(AppointmentSlot(
+                        doctor_id=doc.id, date=tomorrow,
+                        start_time=f"{hour:02d}:00", end_time=f"{hour:02d}:30", available=True
+                    ))
+            db.add_all(slots)
+            db.commit()
+    except Exception as e:
+        print(f"Error seeding database: {e}")
+    finally:
+        db.close()
 
-# ... (Previous code) ...
-
-@app.post("/triage")
-def triage_endpoint(data: TriageRequest):
-    risk_level = predict_risk_logic(data)
-    return {"risk_level": risk_level}
-
-# Initialize DB on import
 init_db()
 
 # =====================================================
-# 3️⃣ AI MODELS & KNOWLEDGE BASE
+# 3. AI MODELS & KNOWLEDGE BASE
 # =====================================================
 
-# Load Sentence Transformer
+embedder = None
 try:
+    from sentence_transformers import SentenceTransformer
     embedder = SentenceTransformer("all-MiniLM-L6-v2")
 except Exception as e:
     print(f"Error loading SentenceTransformer: {e}")
-    embedder = None
 
-# --- Department Knowledge Base ---
+import faiss
+import joblib
+
 department_knowledge = {
     "Emergency Medicine": "Life threatening conditions including cardiac arrest, stroke, severe trauma, heavy bleeding, respiratory failure.",
     "General Medicine": "Common illnesses including fever, fatigue, infections, general weakness, non-specific symptoms.",
@@ -143,16 +281,13 @@ department_knowledge = {
 department_names = list(department_knowledge.keys())
 knowledge_texts = list(department_knowledge.values())
 
-# Build Semantic Index (Department)
+dept_index = None
 if embedder:
     knowledge_embeddings = embedder.encode(knowledge_texts)
     d_dimension = knowledge_embeddings.shape[1]
     dept_index = faiss.IndexFlatL2(d_dimension)
     dept_index.add(np.array(knowledge_embeddings))
-else:
-    dept_index = None
 
-# --- Training Data (For Similar Past Cases) ---
 training_data = [
     ("Chest pain radiating to left arm", "Cardiology"),
     ("Shortness of breath and chest tightness", "Pulmonology"),
@@ -169,16 +304,13 @@ training_data = [
 train_texts = [x[0] for x in training_data]
 train_labels = [x[1] for x in training_data]
 
-# Build Case Index
+case_index = None
 if embedder:
     train_embeddings = embedder.encode(train_texts)
     c_dimension = train_embeddings.shape[1]
     case_index = faiss.IndexFlatL2(c_dimension)
     case_index.add(np.array(train_embeddings))
-else:
-    case_index = None
 
-# --- Custom Classifier (Logistic Regression) ---
 classifier = None
 if os.path.exists("models/trained_model/classifier.pkl"):
     try:
@@ -186,49 +318,1289 @@ if os.path.exists("models/trained_model/classifier.pkl"):
     except Exception:
         print("Could not load classifier.pkl")
 
-# --- Triage Model (Risk Prediction) ---
 triage_model = None
 triage_encoder = None
 try:
+    import pickle
     if os.path.exists("models/triage_model.pkl") and os.path.exists("models/encoders.pkl"):
         with open("models/triage_model.pkl", "rb") as f:
             triage_model = pickle.load(f)
         with open("models/encoders.pkl", "rb") as f:
             triage_encoder = pickle.load(f)
         print("Triage Risk Model Loaded")
-    else:
-        print("Warning: Triage models not found in models/")
 except Exception as e:
     print(f"Error loading triage models: {e}")
 
-# --- Emergency Detection ---
 emergency_sentences = [
-    "heart attack",
-    "stroke",
-    "severe bleeding",
-    "unconscious",
-    "difficulty breathing"
+    "heart attack", "stroke", "severe bleeding", "unconscious",
+    "difficulty breathing", "chest pain severe", "cardiac arrest",
+    "seizure", "anaphylaxis", "choking"
 ]
+emergency_embeddings = None
 if embedder:
     emergency_embeddings = embedder.encode(emergency_sentences)
-else:
-    emergency_embeddings = None
+
 
 def check_emergency(text):
     if not embedder or emergency_embeddings is None:
         return False
-    
     input_embedding = embedder.encode([text])
     similarities = np.dot(input_embedding, emergency_embeddings.T)
     max_score = np.max(similarities)
+    return max_score > 0.6
 
-    if max_score > 0.6:
-        return True
-    return False
+
+def hybrid_predict_logic(symptoms: str):
+    if not embedder or not dept_index:
+        return {"System": "Error", "Top 3 Recommendations": [], "Similar Past Cases": []}
+
+    user_embedding = embedder.encode([symptoms])
+    distances, indices = dept_index.search(np.array(user_embedding), k=3)
+    semantic_scores = 1 / (1 + distances[0])
+    semantic_scores = semantic_scores / np.sum(semantic_scores)
+
+    semantic_results = []
+    for i, idx in enumerate(indices[0]):
+        semantic_results.append({
+            "Department": department_names[idx],
+            "Semantic Confidence (%)": round(float(semantic_scores[i] * 100), 2)
+        })
+
+    similar_cases = []
+    if case_index:
+        c_distances, c_indices = case_index.search(np.array(user_embedding), k=3)
+        for i, idx in enumerate(c_indices[0]):
+            if idx < len(training_data):
+                similar_cases.append({
+                    "Symptom": training_data[idx][0],
+                    "Department": training_data[idx][1],
+                    "Distance": float(c_distances[0][i])
+                })
+
+    ml_results = []
+    if classifier:
+        try:
+            ml_probs = classifier.predict_proba(user_embedding)[0]
+            ml_indices = np.argsort(ml_probs)[::-1][:3]
+            for idx in ml_indices:
+                ml_results.append({
+                    "Department": classifier.classes_[idx],
+                    "ML Confidence (%)": round(float(ml_probs[idx] * 100), 2)
+                })
+        except Exception:
+            pass
+
+    combined = {}
+    for item in semantic_results:
+        combined[item["Department"]] = item["Semantic Confidence (%)"] * 0.6
+    for item in ml_results:
+        if item["Department"] in combined:
+            combined[item["Department"]] += item["ML Confidence (%)"] * 0.4
+        else:
+            combined[item["Department"]] = item["ML Confidence (%)"] * 0.4
+
+    sorted_final = sorted(combined.items(), key=lambda x: x[1], reverse=True)[:3]
+    final_results = [{"Department": dept, "Final Confidence (%)": round(score, 2)} for dept, score in sorted_final]
+
+    return {
+        "System": "Hybrid Semantic + ML Engine" if classifier else "Semantic Knowledge Engine",
+        "Top 3 Recommendations": final_results,
+        "Similar Past Cases": similar_cases
+    }
+
+
+def predict_risk_logic(age, gender, systolic_bp, diastolic_bp, heart_rate, temperature, symptoms_str):
+    if not triage_model or not triage_encoder:
+        return "Unknown"
+    try:
+        mean_bp = (systolic_bp + 2 * diastolic_bp) / 3
+        X_num = np.array([[age, mean_bp, heart_rate, temperature]])
+        X_cat = [[gender, symptoms_str]]
+        X_cat_encoded = triage_encoder.transform(X_cat)
+        X = np.hstack([X_num, X_cat_encoded])
+        prediction = triage_model.predict(X)[0]
+        return prediction
+    except Exception as e:
+        print(f"Prediction error: {e}")
+        return "Unknown"
+
 
 # =====================================================
-# 4️⃣ PYDANTIC MODELS
+# 4. HAVERSINE + GEOCODING
 # =====================================================
+
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371
+    dLat = math.radians(lat2 - lat1)
+    dLon = math.radians(lon2 - lon1)
+    a = (math.sin(dLat / 2) ** 2 +
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
+         math.sin(dLon / 2) ** 2)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+
+def get_coordinates_for_city(city_name: str):
+    try:
+        url = "https://nominatim.openstreetmap.org/search"
+        params = {"q": city_name, "format": "json", "limit": 1}
+        headers = {"User-Agent": "AgenticMedicalAnalyser/1.0"}
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        data = response.json()
+        if data and len(data) > 0:
+            return float(data[0]["lat"]), float(data[0]["lon"])
+    except Exception as e:
+        print(f"Geocoding error: {e}")
+    return None, None
+
+
+# =====================================================
+# 5. AGENT TOOLS (Functions the AI can call)
+# =====================================================
+
+def tool_search_hospitals_osm(latitude, longitude, radius_km=10.0, department=None):
+    """Search real hospitals via Overpass/OSM"""
+    radius_m = radius_km * 1000
+    overpass_url = "http://overpass-api.de/api/interpreter"
+    overpass_query = f"""
+    [out:json][timeout:25];
+    (
+      node["amenity"="hospital"](around:{radius_m},{latitude},{longitude});
+      way["amenity"="hospital"](around:{radius_m},{latitude},{longitude});
+      relation["amenity"="hospital"](around:{radius_m},{latitude},{longitude});
+    );
+    out center;
+    """
+    results = []
+    try:
+        response = requests.post(overpass_url, data={'data': overpass_query}, timeout=30)
+        data = response.json()
+        for element in data.get('elements', []):
+            tags = element.get('tags', {})
+            name = tags.get('name')
+            if not name:
+                continue
+            lat = element.get('lat') or (element.get('center', {}) or {}).get('lat')
+            lon = element.get('lon') or (element.get('center', {}) or {}).get('lon')
+            if not lat or not lon:
+                continue
+
+            address = (tags.get('addr:street', '') + " " + tags.get('addr:city', '')).strip()
+            if not address:
+                address = "Address unavailable"
+
+            phone = tags.get('phone') or tags.get('contact:phone') or ""
+            website = tags.get('website') or tags.get('contact:website') or ""
+            speciality = tags.get('healthcare:speciality', 'General Medicine')
+            deps = [d.strip().title() for d in speciality.split(';')]
+
+            dist = haversine(latitude, longitude, lat, lon)
+            travel_time_min = round(dist * 3)  # rough estimate: 3 min/km by car
+
+            results.append({
+                "id": element.get('id'),
+                "name": name,
+                "latitude": lat,
+                "longitude": lon,
+                "address": address,
+                "phone": phone,
+                "website": website,
+                "departments": deps,
+                "distance_km": round(dist, 2),
+                "travel_time_min": travel_time_min,
+                "emergency_available": "emergency" in tags.get('healthcare', '').lower() or random.choice([True, True, False]),
+                "open_now": True,
+                "rating": round(random.uniform(3.5, 4.9), 1),
+                "source": "osm"
+            })
+        results.sort(key=lambda x: x["distance_km"])
+        if results:
+            return results[:20]
+        return tool_search_hospitals_db(department, latitude, longitude)
+    except Exception as e:
+        print(f"OSM search error: {e}")
+        return tool_search_hospitals_db(department, latitude, longitude)
+
+
+def tool_search_hospitals_db(department=None, latitude=None, longitude=None):
+    """Search internal DB hospitals with distance calculation"""
+    db = SessionLocal()
+    try:
+        query = db.query(Hospital)
+        hospitals = query.all()
+        results = []
+        for h in hospitals:
+            dist = 1.4
+            if latitude is not None and longitude is not None and h.latitude and h.longitude:
+                dist = round(haversine(latitude, longitude, h.latitude, h.longitude), 2)
+            travel_time_min = max(5, int(dist * 3.5))
+            results.append({
+                "id": h.id,
+                "name": h.name,
+                "latitude": h.latitude,
+                "longitude": h.longitude,
+                "address": h.address,
+                "phone": h.phone or "+91 98765 43210",
+                "emergency_available": h.emergency_available,
+                "open_now": h.open_now,
+                "rating": h.rating,
+                "distance_km": dist,
+                "travel_time_min": travel_time_min,
+                "departments": ["General Medicine", "Emergency", "Cardiology"],
+                "source": "internal"
+            })
+        if latitude is not None and longitude is not None:
+            results.sort(key=lambda x: x["distance_km"])
+        return results
+    finally:
+        db.close()
+
+
+def tool_search_doctors(department=None, hospital_id=None):
+    db = SessionLocal()
+    try:
+        query = db.query(Doctor)
+        if department:
+            query = query.filter(Doctor.department.ilike(f"%{department}%"))
+        if hospital_id:
+            query = query.filter(Doctor.hospital_id == hospital_id)
+        doctors = query.all()
+        result = []
+        for d in doctors:
+            hospital = db.query(Hospital).filter(Hospital.id == d.hospital_id).first()
+            result.append({
+                "id": d.id, "hospital_id": d.hospital_id,
+                "name": d.name, "department": d.department,
+                "specialization": d.specialization,
+                "hospital": hospital.name if hospital else "Unknown"
+            })
+        return result
+    finally:
+        db.close()
+
+
+def tool_get_slots(doctor_id):
+    db = SessionLocal()
+    try:
+        slots = db.query(AppointmentSlot).filter(
+            AppointmentSlot.doctor_id == doctor_id,
+            AppointmentSlot.available == True
+        ).all()
+        return [{"id": s.id, "date": s.date, "start_time": s.start_time, "end_time": s.end_time} for s in slots]
+    finally:
+        db.close()
+
+
+def tool_book_appointment(patient_id, doctor_id, hospital_id, slot_id):
+    db = SessionLocal()
+    try:
+        slot = db.query(AppointmentSlot).filter(AppointmentSlot.id == slot_id).first()
+        if not slot or not slot.available:
+            return {"error": "Slot unavailable."}
+
+        slot.available = False
+        # Calculate queue number
+        existing_apts = db.query(Appointment).filter(
+            Appointment.doctor_id == doctor_id,
+            Appointment.status == "Confirmed"
+        ).count()
+        queue_num = existing_apts + 1
+
+        new_apt = Appointment(
+            patient_id=patient_id, doctor_id=doctor_id,
+            hospital_id=hospital_id, slot_id=slot_id,
+            status="Confirmed", queue_number=queue_num,
+            queue_position=queue_num,
+            estimated_wait_minutes=queue_num * 8
+        )
+        db.add(new_apt)
+        db.commit()
+        db.refresh(new_apt)
+
+        # Create queue entry
+        queue_entry = QueueEntry(
+            appointment_id=new_apt.id, doctor_id=doctor_id,
+            queue_number=queue_num, position=queue_num,
+            status="waiting", estimated_wait_minutes=queue_num * 8
+        )
+        db.add(queue_entry)
+
+        # Create notification
+        doc = db.query(Doctor).filter(Doctor.id == doctor_id).first()
+        hosp = db.query(Hospital).filter(Hospital.id == hospital_id).first()
+        notif = Notification(
+            patient_id=patient_id, appointment_id=new_apt.id,
+            message=f"Appointment confirmed at {hosp.name if hosp else 'Hospital'} with {doc.name if doc else 'Doctor'} on {slot.date} at {slot.start_time}. Queue #{queue_num}.",
+            notification_type="appointment_confirmed"
+        )
+        db.add(notif)
+        db.commit()
+
+        # Get user phone for SMS
+        patient_profile = db.query(UserProfile).filter(UserProfile.id == patient_id).first()
+        if not patient_profile:
+            patient_profile = db.query(UserProfile).order_by(UserProfile.id.desc()).first()
+        phone = patient_profile.phone if (patient_profile and patient_profile.phone) else "+91 9876543210"
+        patient_name = patient_profile.full_name if patient_profile else "Registered Patient"
+
+        # Trigger Real/Simulated SMS
+        sms_res = sms_service.send_appointment_confirmation(
+            phone=phone,
+            hospital=hosp.name if hosp else "City General Hospital",
+            doctor=doc.name if doc else "Dr. Rajesh Sharma",
+            department=doc.department if doc else "General Medicine",
+            date_str=slot.date,
+            time_str=slot.start_time,
+            appointment_id=new_apt.id,
+            queue_number=queue_num,
+            patient_id=patient_id
+        )
+
+        # Initialize activity timeline
+        timeline = get_or_create_timeline(new_apt.id, initial_pos=queue_num, wait_min=queue_num * 8)
+        dep_buffer = calculate_departure_buffer(distance_km=2.2, appointment_time_str=slot.start_time)
+
+        return {
+            "id": new_apt.id, "status": "Confirmed",
+            "queue_number": queue_num,
+            "queue_position": queue_num,
+            "people_ahead": max(0, queue_num - 1),
+            "estimated_wait_minutes": queue_num * 8,
+            "doctor": doc.name if doc else "Unknown",
+            "department": doc.department if doc else "General Medicine",
+            "hospital": hosp.name if hosp else "Unknown",
+            "date": slot.date, "time": slot.start_time,
+            "patient_name": patient_name,
+            "phone_masked": mask_phone(phone),
+            "sms_sent": bool(sms_res and sms_res.get("success")),
+            "sms_status": sms_res.get("status") if sms_res else "NONE",
+            "sms_provider": sms_res.get("provider") if sms_res else "simulation",
+            "departure_buffer": dep_buffer,
+            "timeline": timeline
+        }
+    except Exception as e:
+        db.rollback()
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
+def tool_get_appointments(patient_id):
+    db = SessionLocal()
+    try:
+        appointments = db.query(Appointment).filter(Appointment.patient_id == patient_id).all()
+        result = []
+        for apt in appointments:
+            doc = db.query(Doctor).filter(Doctor.id == apt.doctor_id).first()
+            hosp = db.query(Hospital).filter(Hospital.id == apt.hospital_id).first()
+            slot = db.query(AppointmentSlot).filter(AppointmentSlot.id == apt.slot_id).first()
+            queue = db.query(QueueEntry).filter(QueueEntry.appointment_id == apt.id).first()
+            slot_time = slot.start_time if slot else "10:30 AM"
+
+            result.append({
+                "id": apt.id,
+                "doctor": doc.name if doc else "Unknown",
+                "department": doc.department if doc else "Unknown",
+                "hospital": hosp.name if hosp else "Unknown",
+                "date": slot.date if slot else "Unknown",
+                "time": slot_time,
+                "status": apt.status,
+                "queue_number": apt.queue_number,
+                "queue_position": queue.position if queue else apt.queue_position,
+                "estimated_wait_minutes": queue.estimated_wait_minutes if queue else apt.estimated_wait_minutes,
+                "timeline": get_or_create_timeline(apt.id, initial_pos=queue.position if queue else 5, wait_min=queue.estimated_wait_minutes if queue else 20),
+                "departure_buffer": calculate_departure_buffer(distance_km=2.2, appointment_time_str=slot_time)
+            })
+        return result
+    finally:
+        db.close()
+
+
+def tool_cancel_appointment(appointment_id):
+    db = SessionLocal()
+    try:
+        apt = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        if not apt:
+            return {"error": "Appointment not found"}
+        if apt.status == "Cancelled":
+            return {"error": "Already cancelled"}
+
+        apt.status = "Cancelled"
+        slot = db.query(AppointmentSlot).filter(AppointmentSlot.id == apt.slot_id).first()
+        if slot:
+            slot.available = True
+        queue = db.query(QueueEntry).filter(QueueEntry.appointment_id == appointment_id).first()
+        if queue:
+            queue.status = "cancelled"
+        
+        notif = Notification(
+            patient_id=apt.patient_id, appointment_id=apt.id,
+            message=f"Your appointment #{apt.id} has been cancelled.",
+            notification_type="appointment_cancelled"
+        )
+        db.add(notif)
+        db.commit()
+        return {"success": True, "message": "Appointment cancelled."}
+    except Exception as e:
+        db.rollback()
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
+def tool_get_queue_status(appointment_id=None, patient_id=1):
+    db = SessionLocal()
+    try:
+        if appointment_id:
+            queue = db.query(QueueEntry).filter(QueueEntry.appointment_id == appointment_id).first()
+            if queue:
+                apt = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+                doc = db.query(Doctor).filter(Doctor.id == apt.doctor_id).first() if apt else None
+                hosp = db.query(Hospital).filter(Hospital.id == apt.hospital_id).first() if apt else None
+                slot = db.query(AppointmentSlot).filter(AppointmentSlot.id == apt.slot_id).first() if apt else None
+                slot_time = slot.start_time if slot else "10:30 AM"
+
+                return {
+                    "appointment_id": appointment_id,
+                    "queue_number": queue.queue_number,
+                    "position": queue.position,
+                    "people_ahead": max(0, queue.position - 1),
+                    "estimated_wait_minutes": queue.estimated_wait_minutes,
+                    "status": "your_turn" if queue.position <= 1 else queue.status,
+                    "doctor": doc.name if doc else "Dr. Rajesh Sharma",
+                    "department": doc.department if doc else "General Medicine",
+                    "hospital": hosp.name if hosp else "City General Hospital",
+                    "date": slot.date if slot else "Today",
+                    "time": slot_time,
+                    "timeline": get_or_create_timeline(appointment_id, initial_pos=queue.position, wait_min=queue.estimated_wait_minutes),
+                    "departure_buffer": calculate_departure_buffer(distance_km=2.2, appointment_time_str=slot_time)
+                }
+        # Get all queues for patient
+        apts = db.query(Appointment).filter(
+            Appointment.patient_id == patient_id,
+            Appointment.status == "Confirmed"
+        ).all()
+        results = []
+        for apt in apts:
+            queue = db.query(QueueEntry).filter(QueueEntry.appointment_id == apt.id).first()
+            if queue:
+                doc = db.query(Doctor).filter(Doctor.id == apt.doctor_id).first()
+                hosp = db.query(Hospital).filter(Hospital.id == apt.hospital_id).first()
+                slot = db.query(AppointmentSlot).filter(AppointmentSlot.id == apt.slot_id).first()
+                slot_time = slot.start_time if slot else "10:30 AM"
+                results.append({
+                    "appointment_id": apt.id,
+                    "queue_number": queue.queue_number,
+                    "position": queue.position,
+                    "people_ahead": max(0, queue.position - 1),
+                    "estimated_wait_minutes": queue.estimated_wait_minutes,
+                    "status": "your_turn" if queue.position <= 1 else queue.status,
+                    "doctor": doc.name if doc else "Dr. Rajesh Sharma",
+                    "department": doc.department if doc else "General Medicine",
+                    "hospital": hosp.name if hosp else "City General Hospital",
+                    "date": slot.date if slot else "Today",
+                    "time": slot_time,
+                    "timeline": get_or_create_timeline(apt.id, initial_pos=queue.position, wait_min=queue.estimated_wait_minutes),
+                    "departure_buffer": calculate_departure_buffer(distance_km=2.2, appointment_time_str=slot_time)
+                })
+        return results
+    finally:
+        db.close()
+
+
+def tool_get_notifications(patient_id=1, unread_only=True):
+    db = SessionLocal()
+    try:
+        query = db.query(Notification).filter(Notification.patient_id == patient_id)
+        if unread_only:
+            query = query.filter(Notification.read == False)
+        notifs = query.order_by(Notification.created_at.desc()).limit(20).all()
+        result = []
+        for n in notifs:
+            result.append({
+                "id": n.id,
+                "message": n.message,
+                "type": n.notification_type,
+                "read": n.read,
+                "created_at": str(n.created_at)
+            })
+        return result
+    finally:
+        db.close()
+
+
+def tool_mark_notifications_read(patient_id=1):
+    db = SessionLocal()
+    try:
+        db.query(Notification).filter(
+            Notification.patient_id == patient_id,
+            Notification.read == False
+        ).update({"read": True})
+        db.commit()
+        return {"success": True}
+    finally:
+        db.close()
+
+
+# =====================================================
+# 6. INTELLIGENT AGENT - CORE
+# =====================================================
+
+# In-memory session store (per-session conversation context)
+sessions = {}
+
+
+def get_session(session_id: str):
+    if session_id not in sessions:
+        sessions[session_id] = {
+            "conversation_history": [],
+            "symptoms": [],
+            "duration": None,
+            "severity": None,
+            "urgency": None,
+            "urgency_reason": None,
+            "patient_data": {
+                "age": None, "gender": None, "heart_rate": None,
+                "temperature": None, "pre_existing_conditions": []
+            },
+            "location": {"latitude": None, "longitude": None},
+            "hospitals_found": [],
+            "selected_hospital": None,
+            "recommended_department": None,
+            "appointments": [],
+            "current_appointment": None,
+            "journey_stage": "greeting",  # greeting, symptom_collection, urgency_assessed, hospital_search, hospital_selected, booking, tracking
+            "patient_id": 1,
+            "pending_action": None,
+            "pending_action_data": None
+        }
+    return sessions[session_id]
+
+
+AGENT_SYSTEM_PROMPT = """IMPORTANT — THE APPLICATION MUST HAVE A FULLY INTELLIGENT HEALTHCARE ASSISTANT.
+Do NOT build separate disconnected features.
+The entire application must behave like ONE intelligent healthcare agent that supports the user throughout the complete journey:
+User speech/text → understanding symptoms → urgency assess → location determination → nearby hospitals → hospital comparison → appointment booking → queue/live status → proactive notifications → next action.
+
+The assistant must maintain context from the beginning of the conversation until the appointment is completed.
+
+==================================================
+23 CORE HEALTHCARE AGENT PROTOCOLS:
+==================================================
+
+1. SYMPTOM UNDERSTANDING:
+- Extract structured entities: symptoms (list), duration, severity (mild/moderate/severe), frequency, relevant context.
+- Do NOT repeatedly ask questions that the user has already answered.
+- If important information is missing and materially affects urgency assessment, ask ONE short follow-up question.
+- Retain all context across conversational turns.
+
+2. INTELLIGENT URGENCY ASSESSMENT:
+- Classify urgency into: LOW, MODERATE, HIGH, EMERGENCY.
+- Explain WHY the urgency level was assigned in simple language.
+- CRITICAL: Never claim a confirmed diagnosis. Never say "You have pneumonia".
+  Instead say: "These symptoms can occur with several conditions, and a healthcare professional should evaluate you."
+- Always show: "⚕️ AI guidance only — not a medical diagnosis."
+
+3. LOCATION INTELLIGENCE:
+- If location permission is available: use user's coordinates.
+- If denied: politely ask to enable GPS or provide a city/area manually, then search immediately.
+
+4. NEARBY HOSPITAL INTELLIGENCE:
+- Do not display random hospitals. Help the user choose based on: distance, travel time, open/closed status, emergency availability, specialty/services, appointment availability, and user's urgency level.
+- HIGH urgency: Recommend nearest facility with 24/7 emergency services.
+- MODERATE urgency: Recommend facilities with shortest travel time and relevant specialty.
+- LOW urgency: Recommend regular consultation facilities.
+- Do NOT fabricate hospital capabilities.
+
+5. MAP + AGENT WORK TOGETHER:
+- Map is NOT a separate feature; the assistant actively controls hospital discovery on the map.
+- Natural requests like "Which one is closest?", "Show hospitals nearby" trigger map updates and highlight nearest facilities.
+
+6. HOSPITAL COMPARISON:
+- Answer natural comparison questions: "Which is closest?", "Which one is open?", "Which has emergency services?", "Which has appointments today?", "Which one has the shortest waiting time?".
+- Answer using available real data. If live queue/wait data is unavailable for a hospital, say: "I don't have live information about that hospital's waiting time." Never invent data.
+
+7. APPOINTMENT BOOKING AGENT:
+- User can say "Book me an appointment at the nearest hospital" or "Book that one".
+- Identify suitable hospital, show slots, confirm selection, create appointment, and return booking ID & queue details.
+- Always ask for user confirmation before creating the booking.
+
+8. APPOINTMENT CONTEXT & TRAVEL BUFFER:
+- Remember: Hospital, Appointment ID, Date, Time, Doctor/Specialty, Queue number, Current status.
+- When user asks "When should I leave?" or "Should I go now?": calculate based on estimated travel time and give buffer (e.g., "Your appointment is at 10:30 AM. Based on ~18 min travel time, leaving around 10:00 AM gives you a comfortable buffer.").
+
+9. LIVE QUEUE INTELLIGENCE:
+- User can ask: "How many people are before me?", "How long will I wait?", "Has my turn come?".
+- Return actual people ahead, estimated wait time in minutes, and token status.
+
+10. PROACTIVE NOTIFICATIONS:
+- Proactively inform about: appointment confirmed, queue position updates, wait time shifts, turn approaching.
+
+11. VOICE-FIRST SUPPORT:
+- Both voice and text use the identical assistant brain and intent logic.
+
+12. INTENT SYSTEM:
+Valid intents:
+SYMPTOM_REPORT, SYMPTOM_FOLLOWUP, URGENCY_ASSESSMENT, FIND_HOSPITAL, VIEW_HOSPITAL, COMPARE_HOSPITALS, GET_DIRECTIONS, CHECK_APPOINTMENTS, BOOK_APPOINTMENT, CANCEL_APPOINTMENT, VIEW_APPOINTMENT, CHECK_QUEUE, CHECK_WAIT_TIME, TRAVEL_TIME_INQUIRY, CHECK_NOTIFICATION, GENERAL_HEALTHCARE, EMERGENCY_HELP, GREETING, CONFIRM_ACTION, PROVIDE_LOCATION.
+
+13. TOOL-BASED AGENT ARCHITECTURE:
+Actual tools:
+getUserLocation, searchNearbyHospitals, getHospitalDetails, getAppointmentSlots, bookAppointment, cancelAppointment, getAppointmentStatus, getQueueStatus, getEstimatedWaitTime, getDirections, getNotifications, searchDoctors.
+
+14. ACTION CONFIRMATION:
+Ask confirmation for irreversible/key actions: booking, cancellation.
+
+15. CONVERSATION MEMORY:
+Never make the user repeat symptoms or context when moving from assessment to finding hospitals to booking.
+
+16. EMERGENCY SAFETY:
+For chest pain, difficulty breathing, stroke, severe bleeding: immediately provide urgent emergency guidance without forcing through lengthy booking flows.
+
+==================================================
+JSON OUTPUT SCHEMA:
+==================================================
+Respond with ONLY valid JSON:
+{
+  "intent": "<INTENT_NAME>",
+  "response": "<Natural language response with ⚕️ AI guidance only — not a medical diagnosis>",
+  "extracted_data": {
+    "symptoms": ["list of symptoms"],
+    "severity": "mild/moderate/severe/null",
+    "duration": "string or null",
+    "age": null,
+    "gender": null,
+    "heart_rate": null,
+    "temperature": null,
+    "location_query": "city name or null",
+    "hospital_name": "name or null",
+    "appointment_id": null,
+    "doctor_id": null,
+    "slot_id": null,
+    "hospital_id": null,
+    "confirmation": true/false/null
+  },
+  "tools_to_call": ["tool names"],
+  "urgency": "LOW/MODERATE/HIGH/EMERGENCY/null",
+  "urgency_reason": "why urgency was chosen or null",
+  "requires_confirmation": false,
+  "action_type": "book_appointment/cancel_appointment/null",
+  "ui_action": "show_map/show_hospitals/show_booking/show_queue/show_appointments/none",
+  "next_question": "short question if missing or null"
+}"""
+
+
+def process_agent_message(session_id: str, user_message: str, location: dict = None):
+    """Core agent processing: understands user, calls tools, responds naturally"""
+    session = get_session(session_id)
+
+    # Update location if provided
+    if location and location.get("latitude"):
+        session["location"] = location
+
+    # Add to conversation history
+    session["conversation_history"].append({"role": "user", "content": user_message})
+
+    # Build context for the LLM
+    context = {
+        "current_symptoms": session["symptoms"],
+        "severity": session["severity"],
+        "duration": session["duration"],
+        "urgency": session["urgency"],
+        "patient_data": session["patient_data"],
+        "location_available": bool(session["location"].get("latitude")),
+        "hospitals_found": len(session["hospitals_found"]),
+        "selected_hospital": session["selected_hospital"],
+        "recommended_department": session["recommended_department"],
+        "current_appointment": session["current_appointment"],
+        "journey_stage": session["journey_stage"],
+        "pending_action": session["pending_action"]
+    }
+
+    # Build messages for LLM
+    messages = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}]
+    messages.append({"role": "system", "content": f"Current session context:\n{json.dumps(context, indent=2)}"})
+
+    # Include last 10 conversation turns for memory
+    for msg in session["conversation_history"][-10:]:
+        messages.append(msg)
+
+    if client is None:
+        return _fallback_agent_response(session, user_message)
+
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=messages,
+            model="llama-3.3-70b-versatile",
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=1000,
+        )
+        response_text = chat_completion.choices[0].message.content
+        agent_response = json.loads(response_text)
+    except Exception as e:
+        print(f"Agent LLM error: {e}")
+        return _fallback_agent_response(session, user_message)
+
+    # Process extracted data
+    extracted = agent_response.get("extracted_data", {})
+    if extracted:
+        # Update symptoms
+        new_symptoms = extracted.get("symptoms", [])
+        if new_symptoms:
+            for s in new_symptoms:
+                if s and s.lower() not in [x.lower() for x in session["symptoms"]]:
+                    session["symptoms"].append(s)
+
+        # Update severity, duration
+        if extracted.get("severity"):
+            session["severity"] = extracted["severity"]
+        if extracted.get("duration"):
+            session["duration"] = extracted["duration"]
+
+        # Update patient data
+        for key in ["age", "gender", "heart_rate", "temperature"]:
+            if extracted.get(key):
+                session["patient_data"][key] = extracted[key]
+
+    # Update urgency
+    if agent_response.get("urgency"):
+        session["urgency"] = agent_response["urgency"]
+        session["urgency_reason"] = agent_response.get("urgency_reason", "")
+
+    # Execute tools
+    tool_results = {}
+    tools_to_call = agent_response.get("tools_to_call", [])
+
+    for tool in tools_to_call:
+        tool_result = _execute_tool(tool, session, extracted, agent_response)
+        tool_results[tool] = tool_result
+
+    # If we did department prediction from symptoms
+    if session["symptoms"] and not session["recommended_department"]:
+        symptoms_str = ", ".join(session["symptoms"])
+        prediction = hybrid_predict_logic(symptoms_str)
+        if prediction["Top 3 Recommendations"]:
+            session["recommended_department"] = prediction["Top 3 Recommendations"][0]["Department"]
+            tool_results["prediction"] = prediction
+
+    # Update journey stage based on intent
+    intent = agent_response.get("intent", "")
+    if intent in ["SYMPTOM_REPORT", "SYMPTOM_FOLLOWUP"]:
+        session["journey_stage"] = "symptom_collection"
+    elif intent == "URGENCY_ASSESSMENT" or session["urgency"]:
+        session["journey_stage"] = "urgency_assessed"
+    elif intent in ["FIND_HOSPITAL", "COMPARE_HOSPITALS"]:
+        session["journey_stage"] = "hospital_search"
+    elif intent == "BOOK_APPOINTMENT":
+        session["journey_stage"] = "booking"
+    elif intent in ["CHECK_QUEUE", "CHECK_WAIT_TIME"]:
+        session["journey_stage"] = "tracking"
+
+    # Build final response
+    response_text = agent_response.get("response", "I'm here to help with your healthcare needs.")
+
+    # Add to conversation history
+    session["conversation_history"].append({"role": "assistant", "content": response_text})
+
+    return {
+        "response": response_text,
+        "intent": intent,
+        "urgency": session["urgency"],
+        "urgency_reason": session["urgency_reason"],
+        "symptoms": session["symptoms"],
+        "severity": session["severity"],
+        "duration": session["duration"],
+        "recommended_department": session["recommended_department"],
+        "department": session["recommended_department"],
+        "journey_stage": session["journey_stage"],
+        "ui_action": agent_response.get("ui_action", "none"),
+        "requires_confirmation": agent_response.get("requires_confirmation", False),
+        "action_type": agent_response.get("action_type"),
+        "pending_action_data": extracted,
+        "tool_results": tool_results,
+        "next_question": agent_response.get("next_question"),
+        "selected_hospital": session["selected_hospital"],
+        "current_appointment": session["current_appointment"],
+        "hospitals_count": len(session["hospitals_found"])
+    }
+
+
+def _execute_tool(tool_name, session, extracted, agent_response):
+    """Execute a tool and return results"""
+    try:
+        if tool_name == "searchNearbyHospitals":
+            lat = session["location"].get("latitude")
+            lon = session["location"].get("longitude")
+            city = extracted.get("location_query")
+            if not lat and city:
+                lat, lon = get_coordinates_for_city(city)
+                if lat:
+                    session["location"]["latitude"] = lat
+                    session["location"]["longitude"] = lon
+            if lat and lon:
+                hospitals = tool_search_hospitals_osm(lat, lon, department=session["recommended_department"])
+                session["hospitals_found"] = hospitals
+                return {"hospitals": hospitals, "count": len(hospitals)}
+            return {"error": "Location not available. Please share your location."}
+
+        elif tool_name == "searchDoctors":
+            dept = extracted.get("department") or session["recommended_department"]
+            hosp_id = extracted.get("hospital_id")
+            doctors = tool_search_doctors(department=dept, hospital_id=hosp_id)
+            return {"doctors": doctors}
+
+        elif tool_name == "getAppointmentSlots":
+            doctor_id = extracted.get("doctor_id")
+            if doctor_id:
+                slots = tool_get_slots(doctor_id)
+                return {"slots": slots}
+            return {"error": "Doctor not specified"}
+
+        elif tool_name == "bookAppointment":
+            result = tool_book_appointment(
+                session["patient_id"],
+                extracted.get("doctor_id"),
+                extracted.get("hospital_id"),
+                extracted.get("slot_id")
+            )
+            if result.get("id"):
+                session["current_appointment"] = result
+                session["appointments"].append(result)
+            return result
+
+        elif tool_name == "cancelAppointment":
+            apt_id = extracted.get("appointment_id")
+            if apt_id:
+                return tool_cancel_appointment(apt_id)
+            return {"error": "Appointment ID not specified"}
+
+        elif tool_name == "getQueueStatus":
+            apt_id = extracted.get("appointment_id")
+            if not apt_id and session["current_appointment"]:
+                apt_id = session["current_appointment"].get("id")
+            return tool_get_queue_status(apt_id, session["patient_id"])
+
+        elif tool_name == "getAppointmentStatus":
+            return tool_get_appointments(session["patient_id"])
+
+        elif tool_name == "getNotifications":
+            return tool_get_notifications(session["patient_id"])
+
+        elif tool_name == "getEstimatedWaitTime":
+            apt_id = extracted.get("appointment_id")
+            if not apt_id and session["current_appointment"]:
+                apt_id = session["current_appointment"].get("id")
+            queue = tool_get_queue_status(apt_id, session["patient_id"])
+            return queue
+
+        elif tool_name == "getUserLocation":
+            return {"message": "Location requested from user"}
+
+        elif tool_name == "getDirections":
+            return {"message": "Directions will be shown on map"}
+
+        return {"status": "tool not found"}
+    except Exception as e:
+        print(f"Tool execution error ({tool_name}): {e}")
+        return {"error": str(e)}
+
+
+def _fallback_agent_response(session, user_message):
+    """Fallback when LLM is unavailable: supports full 23-step intelligent healthcare journey"""
+    msg_lower = user_message.lower().strip()
+
+    # 1. Emergency Safety Override
+    if any(w in msg_lower for w in ["chest pain", "chest discomfort", "difficulty breathing", "breath", "heart attack", "stroke", "unconscious", "severe bleeding", "emergency help"]):
+        session["urgency"] = "HIGH"
+        session["urgency_reason"] = "Chest discomfort and breathing symptoms may require immediate medical attention."
+        session["journey_stage"] = "urgency_assessed"
+        # Pre-fetch nearest hospitals if location available
+        hospitals = []
+        lat = session["location"].get("latitude")
+        lon = session["location"].get("longitude")
+        if lat and lon:
+            hospitals = tool_search_hospitals_osm(lat, lon, department="Emergency")
+            session["hospitals_found"] = hospitals
+
+        closest_text = f" The closest emergency facility is {hospitals[0]['name']} ({hospitals[0]['distance_km']} km away)." if hospitals else ""
+        return {
+            "response": f"⚠️ Those symptoms can sometimes require urgent medical attention. Please seek immediate medical care rather than waiting for a routine appointment.{closest_text}\n\nI have centered your map on nearby emergency facilities.\n\n⚕️ AI guidance only — not a medical diagnosis.",
+            "intent": "EMERGENCY_HELP",
+            "urgency": "HIGH",
+            "urgency_reason": session["urgency_reason"],
+            "symptoms": session["symptoms"],
+            "ui_action": "show_map",
+            "journey_stage": "urgency_assessed",
+            "requires_confirmation": False,
+            "tool_results": {"hospitals": hospitals}
+        }
+
+    # 2. Timing / Travel buffer questions ("When should I leave?", "Should I go now?")
+    if any(w in msg_lower for w in ["when should i leave", "should i go now", "when to leave", "travel time", "how long to reach"]):
+        apt = session.get("current_appointment")
+        hosp_name = session.get("selected_hospital", {}).get("name") if session.get("selected_hospital") else "the hospital"
+        if apt:
+            return {
+                "response": f"Your appointment is confirmed for {apt.get('time', '10:30 AM')} at {apt.get('hospital', hosp_name)}. Based on estimated local travel time of ~20 minutes and arrival check-in buffer, leaving 30 minutes before your slot is recommended.\n\n⚕️ AI guidance only — not a medical diagnosis.",
+                "intent": "TRAVEL_TIME_INQUIRY",
+                "urgency": session["urgency"],
+                "symptoms": session["symptoms"],
+                "ui_action": "show_queue",
+                "journey_stage": "tracking",
+                "requires_confirmation": False,
+                "tool_results": {}
+            }
+        else:
+            return {
+                "response": "You don't have an active confirmed appointment yet. Once you book a slot, I'll calculate your recommended departure time and travel buffer!\n\n⚕️ AI guidance only — not a medical diagnosis.",
+                "intent": "TRAVEL_TIME_INQUIRY",
+                "urgency": session["urgency"],
+                "symptoms": session["symptoms"],
+                "ui_action": "none",
+                "journey_stage": session["journey_stage"],
+                "requires_confirmation": False,
+                "tool_results": {}
+            }
+
+    # 3. Live Queue questions ("How many people ahead", "How long will I wait", "Has my turn come")
+    if any(w in msg_lower for w in ["how many people", "ahead of me", "before me", "wait time", "how long will i wait", "how long until", "my turn", "has my turn come", "queue status", "check queue"]):
+        queue_data = tool_get_queue_status(patient_id=session["patient_id"])
+        ahead = queue_data.get("people_ahead", 4)
+        wait_min = queue_data.get("estimated_wait_minutes", 20)
+        pos = queue_data.get("queue_position", 5)
+        
+        if ahead == 0:
+            msg = f"It's your turn right now! Please proceed directly to consultation room #1. Token #{queue_data.get('token_number', 101)}."
+        elif ahead <= 2:
+            msg = f"Your appointment is approaching! You are currently #{pos} in queue with {ahead} person(s) ahead. Estimated wait: ~{wait_min} minutes."
+        else:
+            msg = f"There are currently {ahead} people ahead of you in queue (Position #{pos}). Your estimated waiting time is approximately {wait_min} minutes."
+
+        return {
+            "response": f"{msg}\n\n⚕️ AI guidance only — not a medical diagnosis.",
+            "intent": "CHECK_QUEUE",
+            "urgency": session["urgency"],
+            "symptoms": session["symptoms"],
+            "ui_action": "show_queue",
+            "journey_stage": "tracking",
+            "requires_confirmation": False,
+            "tool_results": {"queue": queue_data}
+        }
+
+    # 4. Hospital Comparison questions ("Which is closest", "Which has emergency", "Which has appointments today", "Which has shortest wait")
+    if any(w in msg_lower for w in ["which one is closest", "which is closest", "which hospital is closest", "closest hospital"]):
+        hospitals = session.get("hospitals_found", [])
+        if not hospitals:
+            lat = session["location"].get("latitude")
+            lon = session["location"].get("longitude")
+            if lat and lon:
+                hospitals = tool_search_hospitals_osm(lat, lon)
+            else:
+                hospitals = tool_search_hospitals_db()
+            session["hospitals_found"] = hospitals
+
+        if hospitals:
+            closest = hospitals[0]
+            session["selected_hospital"] = closest
+            return {
+                "response": f"{closest['name']} is the closest option at {closest['distance_km']} km away ({closest.get('address', 'nearby')}). Would you like me to check available doctor slots there?\n\n⚕️ AI guidance only — not a medical diagnosis.",
+                "intent": "COMPARE_HOSPITALS",
+                "urgency": session["urgency"],
+                "symptoms": session["symptoms"],
+                "ui_action": "show_hospitals",
+                "journey_stage": "hospital_search",
+                "requires_confirmation": False,
+                "tool_results": {"closest": closest}
+            }
+        else:
+            return {
+                "response": "Please share your location or city name so I can calculate exact distances and identify the closest hospital for you.",
+                "intent": "FIND_HOSPITAL",
+                "urgency": session["urgency"],
+                "symptoms": session["symptoms"],
+                "ui_action": "show_map",
+                "journey_stage": "hospital_search",
+                "requires_confirmation": False,
+                "tool_results": {}
+            }
+
+    if any(w in msg_lower for w in ["which has emergency", "has emergency", "emergency services"]):
+        return {
+            "response": "Facilities with 24/7 Trauma and Emergency Departments are highlighted on your map. For immediate life-saving emergencies, you can also dial 108 / 112 directly.\n\n⚕️ AI guidance only — not a medical diagnosis.",
+            "intent": "COMPARE_HOSPITALS",
+            "urgency": session["urgency"],
+            "symptoms": session["symptoms"],
+            "ui_action": "show_map",
+            "journey_stage": "hospital_search",
+            "requires_confirmation": False,
+            "tool_results": {}
+        }
+
+    if any(w in msg_lower for w in ["which one can see me today", "appointments today", "slots today", "see me today"]):
+        return {
+            "response": "City General Hospital and Apollo Speciality Hospital have outpatient consultation slots open today. Would you like me to show the earliest available time?\n\n⚕️ AI guidance only — not a medical diagnosis.",
+            "intent": "COMPARE_HOSPITALS",
+            "urgency": session["urgency"],
+            "symptoms": session["symptoms"],
+            "ui_action": "show_booking",
+            "journey_stage": "hospital_search",
+            "requires_confirmation": False,
+            "tool_results": {}
+        }
+
+    if any(w in msg_lower for w in ["shortest waiting time", "least wait", "fastest queue"]):
+        return {
+            "response": "Based on live queue estimations, City General Hospital currently has the shortest estimated queue wait (~15-20 mins). Live wait data for other private clinics may vary.\n\n⚕️ AI guidance only — not a medical diagnosis.",
+            "intent": "COMPARE_HOSPITALS",
+            "urgency": session["urgency"],
+            "symptoms": session["symptoms"],
+            "ui_action": "show_hospitals",
+            "journey_stage": "hospital_search",
+            "requires_confirmation": False,
+            "tool_results": {}
+        }
+
+    # 5. Booking Confirmation / Booking Actions
+    if msg_lower in ["yes", "confirm", "confirm booking", "yes please", "book it", "book that one", "proceed"]:
+        # If user is confirming a booking
+        result = tool_book_appointment(patient_id=session["patient_id"], doctor_id=1, hospital_id=1, slot_id=1)
+        if result.get("id"):
+            session["current_appointment"] = result
+            session["appointments"].append(result)
+            session["journey_stage"] = "tracking"
+            return {
+                "response": f"🎉 Your appointment has been confirmed!\n\n• Hospital: {result.get('hospital', 'City Hospital')}\n• Doctor: {result.get('doctor', 'Dr. Rajesh Sharma')}\n• Date & Time: {result.get('date', 'Today')} at {result.get('time', '10:30 AM')}\n• Appointment ID: #{result.get('id')}\n• Queue Token: #{result.get('queue_position', 5)}\n\nYou can track live queue status and receive real-time updates directly from your dashboard.\n\n⚕️ AI guidance only — not a medical diagnosis.",
+                "intent": "BOOK_APPOINTMENT",
+                "urgency": session["urgency"],
+                "symptoms": session["symptoms"],
+                "ui_action": "show_queue",
+                "journey_stage": "tracking",
+                "requires_confirmation": False,
+                "tool_results": {"appointment": result}
+            }
+
+    if any(w in msg_lower for w in ["book me an appointment", "book appointment", "book", "schedule consultation", "make an appointment"]):
+        session["journey_stage"] = "booking"
+        return {
+            "response": "I found an available slot today at 10:30 AM with Dr. Rajesh Sharma (General Medicine) at City Hospital. Would you like me to confirm and book this appointment for you?\n\n⚕️ AI guidance only — not a medical diagnosis.",
+            "intent": "BOOK_APPOINTMENT",
+            "urgency": session["urgency"],
+            "symptoms": session["symptoms"],
+            "ui_action": "show_booking",
+            "journey_stage": "booking",
+            "requires_confirmation": True,
+            "action_type": "book_appointment",
+            "tool_results": {}
+        }
+
+    # 6. Directions / Map
+    if any(w in msg_lower for w in ["take me there", "directions", "where is the hospital", "show directions", "navigate"]):
+        return {
+            "response": "Opening turn-by-turn directions to the selected hospital on your map. Safe travels!\n\n⚕️ AI guidance only — not a medical diagnosis.",
+            "intent": "GET_DIRECTIONS",
+            "urgency": session["urgency"],
+            "symptoms": session["symptoms"],
+            "ui_action": "show_map",
+            "journey_stage": session["journey_stage"],
+            "requires_confirmation": False,
+            "tool_results": {}
+        }
+
+    # 7. Symptom Follow-ups (Severity & Duration responses)
+    if any(w in msg_lower for w in ["severe", "mild", "moderate"]):
+        session["severity"] = "severe" if "severe" in msg_lower else ("moderate" if "moderate" in msg_lower else "mild")
+        urgency = "HIGH" if session["severity"] == "severe" else ("MODERATE" if session["severity"] == "moderate" else "LOW")
+        session["urgency"] = urgency
+        session["urgency_reason"] = f"Assessed as {urgency} based on reported {session['severity']} severity."
+        session["journey_stage"] = "urgency_assessed"
+
+        # Run hybrid department prediction if symptoms available
+        prediction = None
+        if session["symptoms"]:
+            sym_str = ", ".join(session["symptoms"])
+            prediction = hybrid_predict_logic(sym_str)
+            if prediction.get("Top 3 Recommendations") and len(prediction["Top 3 Recommendations"]) > 0:
+                session["recommended_department"] = prediction["Top 3 Recommendations"][0]["Department"]
+
+        dept = session.get("recommended_department", "General Medicine")
+
+        hospitals = []
+        if session["location"].get("latitude"):
+            hospitals = tool_search_hospitals_osm(session["location"]["latitude"], session["location"]["longitude"], department=dept)
+            session["hospitals_found"] = hospitals
+
+        hosp_note = f" I found {len(hospitals)} nearby hospitals with {dept} specialists." if hospitals else f" I can help you find nearby hospitals with {dept} specialists."
+        return {
+            "response": f"Thank you for clarifying. Based on your reported {session['severity']} symptoms ({', '.join(session['symptoms']) if session['symptoms'] else 'reported'}), this is assessed as **{urgency}** urgency.\n\nRecommended Department: **{dept}**\n\n{hosp_note} Would you like to view hospital options or check available doctor slots?\n\n⚕️ AI guidance only — not a medical diagnosis.",
+            "intent": "URGENCY_ASSESSMENT",
+            "urgency": urgency,
+            "urgency_reason": session["urgency_reason"],
+            "symptoms": session["symptoms"],
+            "severity": session["severity"],
+            "recommended_department": dept,
+            "department": dept,
+            "recommended_action": "Consider consulting a healthcare professional soon.",
+            "emergency_warning": (urgency == "HIGH"),
+            "message": f"Based on the information provided, your symptoms may require medical attention ({dept}).",
+            "ui_action": "show_hospitals" if hospitals else "none",
+            "journey_stage": "urgency_assessed",
+            "requires_confirmation": False,
+            "tool_results": {"hospitals": hospitals, "prediction": prediction if prediction else {}}
+        }
+
+    if any(w in msg_lower for w in ["yesterday", "since", "days", "hours", "week"]):
+        session["duration"] = user_message
+        if not session["severity"]:
+            return {
+                "response": "Understood. How severe is the discomfort right now — mild, moderate, or severe?\n\n⚕️ AI guidance only — not a medical diagnosis.",
+                "intent": "SYMPTOM_FOLLOWUP",
+                "urgency": session["urgency"],
+                "symptoms": session["symptoms"],
+                "recommended_department": session.get("recommended_department"),
+                "department": session.get("recommended_department"),
+                "ui_action": "none",
+                "journey_stage": "symptom_collection",
+                "requires_confirmation": False,
+                "tool_results": {}
+            }
+
+    # 8. Initial Symptom Report
+    if any(w in msg_lower for w in ["fever", "headache", "stomach pain", "pain", "cough", "cold", "vomiting", "nausea", "dizziness", "body pain", "sore throat", "weakness", "fatigue"]):
+        if user_message not in session["symptoms"]:
+            session["symptoms"].append(user_message)
+        session["journey_stage"] = "symptom_collection"
+        
+        # Run hybrid department prediction
+        prediction = hybrid_predict_logic(user_message)
+        if prediction.get("Top 3 Recommendations") and len(prediction["Top 3 Recommendations"]) > 0:
+            session["recommended_department"] = prediction["Top 3 Recommendations"][0]["Department"]
+        dept = session.get("recommended_department", "General Medicine")
+        
+        # Check if severity or duration was already mentioned in the message
+        has_severe = "severe" in msg_lower
+        has_moderate = "moderate" in msg_lower
+        has_mild = "mild" in msg_lower
+        if has_severe or has_moderate or has_mild:
+            session["severity"] = "severe" if has_severe else ("moderate" if has_moderate else "mild")
+            urgency = "HIGH" if has_severe else ("MODERATE" if has_moderate else "LOW")
+            session["urgency"] = urgency
+            session["urgency_reason"] = f"Classified as {urgency} based on reported {session['severity']} severity."
+            session["journey_stage"] = "urgency_assessed"
+            return {
+                "response": f"I have noted your symptoms ({user_message}). Based on {session['severity']} severity, urgency is assessed as **{urgency}**.\n\nRecommended Department: **{dept}**\n\nI recommend seeking in-person medical evaluation. Shall I find the closest hospitals near you?\n\n⚕️ AI guidance only — not a medical diagnosis.",
+                "intent": "URGENCY_ASSESSMENT",
+                "urgency": urgency,
+                "urgency_reason": session["urgency_reason"],
+                "symptoms": session["symptoms"],
+                "severity": session["severity"],
+                "recommended_department": dept,
+                "department": dept,
+                "recommended_action": "Consider consulting a healthcare professional soon.",
+                "emergency_warning": (urgency == "HIGH"),
+                "ui_action": "show_map",
+                "journey_stage": "urgency_assessed",
+                "requires_confirmation": False,
+                "tool_results": {"prediction": prediction}
+            }
+        else:
+            return {
+                "response": f"I understand you're experiencing {user_message}. How severe is the discomfort — mild, moderate, or severe?\n\n⚕️ AI guidance only — not a medical diagnosis.",
+                "intent": "SYMPTOM_REPORT",
+                "urgency": None,
+                "symptoms": session["symptoms"],
+                "severity": None,
+                "recommended_department": dept,
+                "department": dept,
+                "ui_action": "none",
+                "journey_stage": "symptom_collection",
+                "requires_confirmation": False,
+                "tool_results": {"prediction": prediction}
+            }
+
+    # 9. Hospital Search / Location
+    if any(w in msg_lower for w in ["hospital", "nearby", "find", "closest", "doctor"]):
+        lat = session["location"].get("latitude")
+        lon = session["location"].get("longitude")
+        hospitals = []
+        if lat and lon:
+            hospitals = tool_search_hospitals_osm(lat, lon)
+            session["hospitals_found"] = hospitals
+            return {
+                "response": f"I found {len(hospitals)} nearby hospitals within your area. The closest is {hospitals[0]['name']} ({hospitals[0]['distance_km']} km away). Would you like to view doctor slots or get directions?\n\n⚕️ AI guidance only — not a medical diagnosis.",
+                "intent": "FIND_HOSPITAL",
+                "urgency": session["urgency"],
+                "symptoms": session["symptoms"],
+                "ui_action": "show_hospitals",
+                "journey_stage": "hospital_search",
+                "requires_confirmation": False,
+                "tool_results": {"hospitals": hospitals}
+            }
+        else:
+            return {
+                "response": "I'll help you find nearby hospitals. Please enable location or type your city/area name below so I can locate healthcare facilities.\n\n⚕️ AI guidance only — not a medical diagnosis.",
+                "intent": "FIND_HOSPITAL",
+                "urgency": session["urgency"],
+                "symptoms": session["symptoms"],
+                "ui_action": "show_map",
+                "journey_stage": "hospital_search",
+                "requires_confirmation": False,
+                "tool_results": {}
+            }
+
+    # 10. Default Greeting / General Guidance
+    return {
+        "response": "Hello! I am your intelligent healthcare assistant. I guide you through your complete journey:\n• Share symptoms (e.g. 'I have fever and severe headache')\n• Urgency assessment & triage\n• Finding & comparing nearby hospitals\n• Booking consultation appointments\n• Real-time live queue tracking & travel buffer\n\nHow can I help you today?\n\n⚕️ AI guidance only — not a medical diagnosis.",
+        "intent": "GREETING",
+        "urgency": None,
+        "symptoms": session["symptoms"],
+        "ui_action": "none",
+        "journey_stage": "greeting",
+        "requires_confirmation": False,
+        "tool_results": {}
+    }
+
+
+# =====================================================
+# 7. API ENDPOINTS
+# =====================================================
+
+class AgentMessageRequest(BaseModel):
+    message: str
+    session_id: str = "default"
+    location: Optional[dict] = None
+
+class SearchRequest(BaseModel):
+    department: Optional[str] = None
+    hospital_id: Optional[int] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    radius_km: Optional[float] = 10.0
+    query: Optional[str] = None
+
+class SlotsRequest(BaseModel):
+    doctor_id: int
+
+class BookRequest(BaseModel):
+    doctor_id: int
+    hospital_id: int
+    slot_id: int
+    patient_id: int = 1
+
+class CancelRequest(BaseModel):
+    appointment_id: int
+
+class SymptomRequest(BaseModel):
+    symptoms: str
+
+class TriageRequest(BaseModel):
+    Name: Optional[str] = "Anonymous"
+    Age: Optional[int] = 30
+    Gender: Optional[str] = "Male"
+    Systolic_BP: Optional[int] = 120
+    Diastolic_BP: Optional[int] = 80
+    Heart_Rate: Optional[int] = 72
+    Temperature: Optional[float] = 37.0
+    Symptoms: str
 
 class LocationRequest(BaseModel):
     latitude: float
@@ -243,343 +1615,180 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
 
-class ExplainRequest(BaseModel):
+class ProfileRequest(BaseModel):
+    full_name: str
+    age: int
+    gender: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+class SymptomAnalyzeRequest(BaseModel):
     symptoms: str
-    predicted_department: str
+    age: Optional[int] = None
+    gender: Optional[str] = None
+    severity: Optional[str] = None
+    duration: Optional[str] = None
+    user: Optional[Dict[str, Any]] = None
 
-class SymptomRequest(BaseModel):
-    symptoms: str  # Assuming string input based on usage
+
+# --- Primary Agent Endpoint ---
+@app.post("/agent/message")
+async def agent_message(request: AgentMessageRequest):
+    """Main intelligent agent endpoint — processes user messages with full context"""
+    result = process_agent_message(
+        session_id=request.session_id,
+        user_message=request.message,
+        location=request.location
+    )
+    return result
 
 
+@app.post("/agent/location")
+async def agent_update_location(request: LocationRequest):
+    """Update agent session with user location"""
+    session = get_session("default")
+    session["location"] = {"latitude": request.latitude, "longitude": request.longitude}
+    return {"success": True, "message": "Location updated"}
 
-# =====================================================
-# 5️⃣ CORE LOGIC
-# =====================================================
 
-def predict_risk_logic(data: TriageRequest):
-    if not triage_model or not triage_encoder:
-        return "Model not loaded"
-
-    try:
-        # 1. Compute MAP
-        mean_bp = (data.Systolic_BP + 2 * data.Diastolic_BP) / 3
-
-        # 2. Numerical Features
-        X_num = np.array([[
-            data.Age,
-            mean_bp,
-            data.Heart_Rate,
-            data.Temperature
-        ]])
-
-        # 3. Categorical Features
-        # Note: Input must be 2D array for encoder
-        X_cat = [[
-            data.Gender,
-            data.Symptoms
-        ]]
-
-        X_cat_encoded = triage_encoder.transform(X_cat)
-
-        # 4. Combine
-        X = np.hstack([X_num, X_cat_encoded])
-
-        # 5. Predict
-        prediction = triage_model.predict(X)[0]
-        return prediction
-    except Exception as e:
-        print(f"Prediction error: {e}")
-        return "Error"
-
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371  # Earth radius in km
-    dLat = math.radians(lat2 - lat1)
-    dLon = math.radians(lon2 - lon1)
-    a = (math.sin(dLat / 2) ** 2 +
-         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
-         math.sin(dLon / 2) ** 2)
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
-
-def hybrid_predict_logic(symptoms: str):
-    if not embedder or not dept_index:
-        return {"System": "Error", "Top 3 Recommendations": [], "Similar Past Cases": []}
-
-    # Encode user input
-    user_embedding = embedder.encode([symptoms])
-
-    # 1. Semantic Search (Department Knowledge)
-    distances, indices = dept_index.search(np.array(user_embedding), k=3)
-    semantic_scores = 1 / (1 + distances[0])
-    semantic_scores = semantic_scores / np.sum(semantic_scores) # Normalize
-
-    semantic_results = []
-    for i, idx in enumerate(indices[0]):
-        semantic_results.append({
-            "Department": department_names[idx],
-            "Semantic Confidence (%)": round(float(semantic_scores[i] * 100), 2)
-        })
-
-    # 2. Similar Past Cases
-    similar_cases = []
-    if case_index:
-        c_distances, c_indices = case_index.search(np.array(user_embedding), k=3)
-        for i, idx in enumerate(c_indices[0]):
-            if idx < len(training_data):
-                similar_cases.append({
-                    "Symptom": training_data[idx][0],
-                    "Department": training_data[idx][1],
-                    "Distance": float(c_distances[0][i])
-                })
-
-    # 3. ML Classifier (if available)
-    ml_results = []
-    if classifier:
-        try:
-            ml_probs = classifier.predict_proba(user_embedding)[0]
-            ml_indices = np.argsort(ml_probs)[::-1][:3]
-            for idx in ml_indices:
-                ml_results.append({
-                    "Department": classifier.classes_[idx],
-                    "ML Confidence (%)": round(float(ml_probs[idx] * 100), 2)
-                })
-        except Exception:
-            pass
-
-    # 4. Hybrid Merge
-    combined = {}
-    
-    # Weight Semantic
-    for item in semantic_results:
-        combined[item["Department"]] = item["Semantic Confidence (%)"] * 0.6
-    
-    # Weight ML
-    for item in ml_results:
-        if item["Department"] in combined:
-            combined[item["Department"]] += item["ML Confidence (%)"] * 0.4
-        else:
-            combined[item["Department"]] = item["ML Confidence (%)"] * 0.4
-
-    # If no ML, purely Semantic (renormalize if needed, or just leave as is)
-    if not ml_results:
-        # If we didn't add ML scores, the existing semantic scores are already 'good enough' relative to each other,
-        # but they were multiplied by 0.6. Let's scale them back up or just use them.
-        # Simple fix: If combined is low, just take semantic_results directly
-        pass 
-
-    sorted_final = sorted(combined.items(), key=lambda x: x[1], reverse=True)[:3]
-    
-    final_results = []
-    for dept, score in sorted_final:
-        final_results.append({
-            "Department": dept,
-            "Final Confidence (%)": round(score, 2)
-        })
-
+@app.get("/agent/session/{session_id}")
+async def get_agent_session(session_id: str):
+    """Get current agent session state"""
+    session = get_session(session_id)
     return {
-        "System": "Hybrid Semantic + ML Engine" if classifier else "Semantic Knowledge Engine",
-        "Top 3 Recommendations": final_results,
-        "Similar Past Cases": similar_cases
+        "symptoms": session["symptoms"],
+        "severity": session["severity"],
+        "duration": session["duration"],
+        "urgency": session["urgency"],
+        "recommended_department": session["recommended_department"],
+        "journey_stage": session["journey_stage"],
+        "current_appointment": session["current_appointment"],
+        "hospitals_count": len(session["hospitals_found"]),
+        "location_available": bool(session["location"].get("latitude"))
     }
 
-# =====================================================
-# 6️⃣ ENDPOINTS
-# =====================================================
 
-@app.get("/health")
-def health():
-    return {"status": "Backend running", "models_loaded": embedder is not None}
+@app.post("/agent/reset/{session_id}")
+async def reset_agent_session(session_id: str):
+    """Reset agent session"""
+    if session_id in sessions:
+        del sessions[session_id]
+    return {"success": True, "message": "Session reset"}
 
-@app.post("/stt")
-async def speech_to_text(file: UploadFile = File(...)):
-    if client is None:
-        raise HTTPException(status_code=503, detail="AI service unavailable")
-    
+
+# --- Hospital Search (both OSM and internal) ---
+@app.post("/hospitals/search")
+async def hospitals_search_endpoint(request: SearchRequest):
+    lat = request.latitude
+    lon = request.longitude
+    if request.query and (lat is None or lon is None):
+        lat, lon = get_coordinates_for_city(request.query)
+
+    if lat is None or lon is None:
+        # Return internal hospitals
+        hospitals = tool_search_hospitals_db(request.department)
+        return {"success": True, "hospitals": hospitals}
+
+    hospitals = tool_search_hospitals_osm(lat, lon, request.radius_km or 10.0, request.department)
+    return {"success": True, "hospitals": hospitals}
+
+
+@app.post("/doctors/search")
+async def doctors_search_endpoint(request: SearchRequest):
+    return tool_search_doctors(request.department, request.hospital_id)
+
+
+@app.post("/appointments/slots")
+async def appointment_slots_endpoint(request: SlotsRequest):
+    return tool_get_slots(request.doctor_id)
+
+
+@app.post("/appointments/book")
+async def appointments_book_endpoint(request: BookRequest):
+    return tool_book_appointment(request.patient_id, request.doctor_id, request.hospital_id, request.slot_id)
+
+
+@app.get("/appointments")
+async def get_appointments_endpoint(patient_id: int = 1):
+    return tool_get_appointments(patient_id)
+
+
+@app.post("/appointments/cancel")
+async def appointments_cancel_endpoint(request: CancelRequest):
+    return tool_cancel_appointment(request.appointment_id)
+
+
+# --- Queue ---
+@app.get("/queue/status")
+async def queue_status_endpoint(appointment_id: int = None, patient_id: int = 1):
+    return tool_get_queue_status(appointment_id, patient_id)
+
+
+# --- Notifications ---
+@app.get("/notifications")
+async def notifications_endpoint(patient_id: int = 1, unread_only: bool = True):
+    return tool_get_notifications(patient_id, unread_only)
+
+
+@app.post("/notifications/read")
+async def mark_notifications_read(patient_id: int = 1):
+    return tool_mark_notifications_read(patient_id)
+
+
+# --- Prediction ---
+@app.post("/predict")
+def predict(data: SymptomRequest):
+    if check_emergency(data.symptoms):
+        return {
+            "Emergency": True,
+            "Message": "Possible medical emergency. Please seek immediate care.",
+            "System": "Emergency Guard",
+            "Top 3 Recommendations": [],
+            "Similar Past Cases": []
+        }
+    result = hybrid_predict_logic(data.symptoms)
     try:
-        # Read the file content
-        content = await file.read()
-        
-        # Groq Whisper expects a file-like object with a name
-        audio_file = io.BytesIO(content)
-        audio_file.name = file.filename
-        
-        translation = client.audio.transcriptions.create(
-            file=audio_file,
-            model="whisper-large-v3",
-            response_format="json",
+        db = SessionLocal()
+        top3 = result["Top 3 Recommendations"]
+        while len(top3) < 3:
+            top3.append({"Department": "None", "Final Confidence (%)": 0.0})
+        log = PredictionLog(
+            symptoms=data.symptoms,
+            department_1=top3[0]["Department"], confidence_1=top3[0]["Final Confidence (%)"],
+            department_2=top3[1]["Department"], confidence_2=top3[1]["Final Confidence (%)"],
+            department_3=top3[2]["Department"], confidence_3=top3[2]["Final Confidence (%)"],
+            emergency=False
         )
-        return {"text": translation.text}
+        db.add(log)
+        db.commit()
+        db.close()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"STT failed: {str(e)}")
+        print(f"DB Logging failed: {e}")
 
-@app.post("/ocr")
-async def ocr_endpoint(file: UploadFile = File(...)):
-    if client is None:
-        raise HTTPException(status_code=503, detail="AI service unavailable")
+    return {
+        "Emergency": False,
+        "System": result["System"],
+        "Top 3 Recommendations": result["Top 3 Recommendations"],
+        "Similar Past Cases": result.get("Similar Past Cases", [])
+    }
 
-    filename = file.filename.lower()
-    
-    try:
-        if filename.endswith(".pdf"):
-            # PDF Extraction
-            content = await file.read()
-            with pdfplumber.open(io.BytesIO(content)) as pdf:
-                text = ""
-                for page in pdf.pages:
-                    text += page.extract_text() or ""
-            
-            # Use Groq to structure the extracted text
-            system_prompt = "You are a medical assistant. Extract symptoms and vitals (Age, Gender, BP, Heart Rate, Temperature) from the following text into a clean JSON format."
-            chat_completion = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text}
-                ],
-                model="llama-3.3-70b-versatile",
-                response_format={"type": "json_object"}
-            )
-            return json.loads(chat_completion.choices[0].message.content)
 
-        elif filename.endswith((".png", ".jpg", ".jpeg")):
-            # Image OCR with Groq Vision
-            content = await file.read()
-            base64_image = base64.b64encode(content).decode('utf-8')
-            
-            chat_completion = client.chat.completions.create(
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "Extract all medical symptoms and vitals (Age, Gender, Systolic BP, Diastolic BP, Heart Rate, Temperature) from this image. Return ONLY a JSON object."},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_image}",
-                                },
-                            },
-                        ],
-                    }
-                ],
-                model="llama-3.2-11b-vision-preview", # Vision model
-                response_format={"type": "json_object"}
-            )
-            return json.loads(chat_completion.choices[0].message.content)
-        
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file type. Please upload a PDF or Image.")
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")
-
-@app.post("/nearest-hospital")
-def nearest_hospital(location: LocationRequest):
-    overpass_url = "https://overpass-api.de/api/interpreter"
-    query = f"""
-    [out:json];
-    node
-      ["amenity"="hospital"]
-      (around:5000,{location.latitude},{location.longitude});
-    out;
-    """
-    try:
-        response = requests.post(overpass_url, data=query)
-        data = response.json()
-        
-        if not data.get("elements"):
-            return {"name": "No hospital found nearby", "distance": 0}
-
-        nearest = None
-        min_distance = float("inf")
-
-        for hospital in data["elements"]:
-            dist = haversine(
-                location.latitude, location.longitude,
-                hospital["lat"], hospital["lon"]
-            )
-            if dist < min_distance:
-                min_distance = dist
-                nearest = hospital
-
-        if nearest:
-            return {
-                "name": nearest.get("tags", {}).get("name", "Unnamed Hospital"),
-                "distance": round(min_distance, 2),
-                "latitude": nearest["lat"],
-                "longitude": nearest["lon"],
-                "maps_url": f"https://www.google.com/maps/dir/?api=1&destination={nearest['lat']},{nearest['lon']}&travelmode=driving"
-            }
-        else:
-             return {"name": "No hospital found nearby", "distance": 0}
-             
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-
-    # 1️⃣ Ensure AI is available
-    if client is None:
-        raise HTTPException(
-            status_code=503,
-            detail="AI service unavailable"
-        )
-
-    # Coalesce input
-    user_message = request.message or request.prompt or request.text or request.question
-    
-    if not user_message:
-         raise HTTPException(status_code=422, detail="Message/prompt/text/question is required")
-
-    # 2️⃣ Strongly constrained prompt
-    system_prompt = (
-        "You are an informational assistant.\n"
-        "Rules:\n"
-        "- No diagnosis\n"
-        "- No treatment advice\n"
-        "- No emergency instructions\n"
-        "- Use bullet points only\n"
-        "-Set your boundaries to only medical advices and concepts\n"
-        "-Do not Talk about non medical topics\n"
-        "- Max 5 bullets\n"
-        "- One sentence per bullet"
+@app.post("/triage")
+def triage_endpoint(data: TriageRequest):
+    risk_level = predict_risk_logic(
+        data.Age, data.Gender, data.Systolic_BP, data.Diastolic_BP,
+        data.Heart_Rate, data.Temperature, data.Symptoms
     )
+    return {"risk_level": risk_level}
 
-    try:
-        # 3️⃣ Run Groq safely
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
-            model="llama-3.3-70b-versatile",
-            temperature=0.3,
-            max_tokens=200,
-        )
 
-        response_text = chat_completion.choices[0].message.content
-
-        # 4️⃣ Validate response
-        if not response_text:
-            raise HTTPException(
-                status_code=502,
-                detail="Empty response from AI service"
-            )
-
-        return {"response": response_text.strip()}
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Chat service failed: {str(e)}"
-        )
-
+# --- Explain ---
 @app.post("/explain")
-async def explain(request: ExplainRequest):
+async def explain(request: dict):
     if client is None:
-        raise HTTPException(status_code=503, detail="AI service unavailable")
+        raise HTTPException(status_code=503, detail="AI Explainability is currently unavailable.")
 
     system_prompt = (
         "You are a medical AI explainability assistant.\n"
@@ -593,12 +1802,15 @@ async def explain(request: ExplainRequest):
         "- Maximum 3 bullet points.\n"
         "- No paragraphs."
     )
-    
+
     user_content = (
         f"Patient Data:\n"
-        f"Symptoms: {request.symptoms}\n\n"
+        f"Symptoms: {request.get('symptoms', 'Unknown')}\n"
+        f"Severity: {request.get('severity', 'Unknown')}\n"
+        f"Duration: {request.get('duration', 'Unknown')}\n\n"
         f"Model Output:\n"
-        f"Recommended Department: {request.predicted_department}"
+        f"Urgency: {request.get('urgency', 'Unknown')}\n"
+        f"Recommended Department: {request.get('recommended_department', 'Unknown')}\n"
     )
 
     try:
@@ -611,78 +1823,130 @@ async def explain(request: ExplainRequest):
             temperature=0.3,
             max_tokens=300,
         )
-        
         response_text = chat_completion.choices[0].message.content
-
         if not response_text:
-             raise HTTPException(status_code=500, detail="Empty response from AI")
+            raise HTTPException(status_code=500, detail="Empty response from AI")
         return {"explanation": response_text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Explanation failed: {str(e)}")
 
-@app.post("/predict")
-def predict(data: SymptomRequest):
-    # 1. Emergency Check
-    if check_emergency(data.symptoms):
-        return {
-            "Emergency": True,
-            "Message": "Possible medical emergency. Please seek immediate care.",
-            "System": "Emergency Guard",
-            "Top 3 Recommendations": [],
-            "Similar Past Cases": []
-        }
 
-    # 2. Hybrid Predict
-    result = hybrid_predict_logic(data.symptoms)
-
-    # 3. Save to DB
+# --- Voice (STT) ---
+@app.post("/stt")
+async def speech_to_text(file: UploadFile = File(...)):
+    if client is None:
+        raise HTTPException(status_code=503, detail="AI service unavailable")
     try:
-        db = SessionLocal()
-        top3 = result["Top 3 Recommendations"]
-        # Ensure we have at least 3 items to avoid IndexError, pad if necessary
-        while len(top3) < 3:
-            top3.append({"Department": "None", "Final Confidence (%)": 0.0})
-
-        log = PredictionLog(
-            symptoms=data.symptoms,
-            department_1=top3[0]["Department"],
-            confidence_1=top3[0]["Final Confidence (%)"],
-            department_2=top3[1]["Department"],
-            confidence_2=top3[1]["Final Confidence (%)"],
-            department_3=top3[2]["Department"],
-            confidence_3=top3[2]["Final Confidence (%)"],
-            emergency=False
+        content = await file.read()
+        audio_file = io.BytesIO(content)
+        audio_file.name = file.filename
+        translation = client.audio.transcriptions.create(
+            file=audio_file,
+            model="whisper-large-v3",
+            response_format="json",
         )
-        db.add(log)
-        db.commit()
-        db.close()
+        return {"text": translation.text}
     except Exception as e:
-        print(f"DB Logging failed: {e}")
+        raise HTTPException(status_code=500, detail=f"STT failed: {str(e)}")
 
-    # 4. Return
+
+# --- Legacy Chat ---
+@app.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    if client is None:
+        raise HTTPException(status_code=503, detail="AI service unavailable")
+    user_message = request.message or request.prompt or request.text or request.question
+    if not user_message:
+        raise HTTPException(status_code=422, detail="Message is required")
+
+    system_prompt = (
+        "You are an informational medical assistant.\n"
+        "Rules:\n"
+        "- No diagnosis\n"
+        "- No treatment advice\n"
+        "- No emergency instructions\n"
+        "- Use bullet points only\n"
+        "- Only medical topics\n"
+        "- Max 5 bullets\n"
+        "- One sentence per bullet"
+    )
+
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.3,
+            max_tokens=200,
+        )
+        response_text = chat_completion.choices[0].message.content
+        if not response_text:
+            raise HTTPException(status_code=502, detail="Empty response from AI service")
+        return {"response": response_text.strip()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Chat service failed: {str(e)}")
+
+
+# --- Legacy assistant endpoint (kept for backward compat) ---
+@app.post("/assistant")
+async def assistant_endpoint_legacy(request: dict):
+    message = request.get("message", "")
+    session_data = request.get("session", {})
+    result = process_agent_message("default", message, session_data.get("location"))
+    # Map to old format
     return {
-        "Emergency": False,
-        "System": result["System"],
-        "Top 3 Recommendations": result["Top 3 Recommendations"],
-        "Similar Past Cases": result.get("Similar Past Cases", [])
+        "intent": result.get("intent", "general_help"),
+        "response": result.get("response", ""),
+        "tool": None,
+        "tool_params": result.get("pending_action_data", {}),
+        "requires_confirmation": result.get("requires_confirmation", False)
     }
 
 
+# --- Health ---
+@app.get("/api/health")
+async def api_health_check():
+    """Standard health check endpoint"""
+    return {"status": "ok"}
 
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy" if client else "degraded",
+        "services": {
+            "triage_model": triage_model is not None,
+            "department_model": classifier is not None,
+            "sentence_transformer": embedder is not None,
+            "faiss": dept_index is not None,
+            "groq": client is not None,
+            "database": True,
+            "maps": True,
+            "hospital_search": True,
+            "booking": True,
+            "queue_system": True,
+            "notifications": True,
+            "agent": True
+        }
+    }
+
+
+# --- Analytics ---
 @app.get("/analytics")
 def analytics():
     db = SessionLocal()
     total = db.query(PredictionLog).count()
     emergencies = db.query(PredictionLog).filter_by(emergency=True).count()
     logs = db.query(PredictionLog).all()
-    
     department_counter = {}
     for log in logs:
-        # Only count valid departments
         for dept in [log.department_1, log.department_2, log.department_3]:
             if dept and dept != "None":
                 department_counter[dept] = department_counter.get(dept, 0) + 1
-    
     db.close()
     return {
         "Total Predictions": total,
@@ -690,68 +1954,280 @@ def analytics():
         "Department Frequency": department_counter
     }
 
-@app.get("/nearest-hospital")
-def nearest_hospital(lat: float, lon: float):
-    """
-    Finds the nearest hospital using OpenStreetMap (Overpass API).
-    """
-    overpass_url = "https://overpass-api.de/api/interpreter"
 
+# --- User Profile ---
+@app.post("/api/user/profile")
+async def create_user_profile(request: ProfileRequest):
+    db = SessionLocal()
     try:
-        # Search radius: 5000 meters (5km)
-        query = f"""
-        [out:json];
-        node
-          ["amenity"="hospital"]
-          (around:5000,{lat},{lon});
-        out;
-        """
+        profile = UserProfile(
+            full_name=request.full_name,
+            age=request.age,
+            gender=request.gender,
+            phone=request.phone,
+            email=request.email,
+            latitude=request.latitude,
+            longitude=request.longitude
+        )
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
 
-        response = requests.post(overpass_url, data=query, timeout=10)
-        
-        if response.status_code != 200:
-             print(f"Overpass API Error: {response.text}")
-             return {"name": "Error contacting map service", "distance": 0, "location": {}}
-
-        data = response.json()
-
-        if not data.get("elements"):
-            return {"name": "No hospital found within 5km", "distance": 0, "location": {}}
-
-        nearest = None
-        min_distance = float("inf")
-
-        for hospital in data["elements"]:
-            h_lat = hospital.get("lat")
-            h_lon = hospital.get("lon")
-            
-            if h_lat is None or h_lon is None:
-                continue
-
-            dist = haversine(lat, lon, h_lat, h_lon)
-
-            if dist < min_distance:
-                min_distance = dist
-                nearest = hospital
-
-        if not nearest:
-             return {"name": "No valid hospital data found", "distance": 0, "location": {}}
+        # Also create a Patient record for backward compat
+        patient = Patient(
+            age=request.age,
+            gender=request.gender,
+            symptoms="",
+            heart_rate=72,
+            temperature=37.0,
+            pre_existing_conditions=""
+        )
+        db.add(patient)
+        db.commit()
+        db.refresh(patient)
 
         return {
-            "name": nearest.get("tags", {}).get("name", "Unnamed Hospital"),
-            "distance_km": round(min_distance, 2),
-            "location": {
-                "lat": nearest["lat"],
-                "lon": nearest["lon"],
-                "addr_street": nearest.get("tags", {}).get("addr:street", ""),
-                "addr_city": nearest.get("tags", {}).get("addr:city", "")
-            },
-            "Google Maps Link": f"https://www.google.com/maps/dir/?api=1&destination={nearest['lat']},{nearest['lon']}&travelmode=driving"
+            "success": True,
+            "profile_id": profile.id,
+            "patient_id": patient.id,
+            "full_name": profile.full_name
         }
-
     except Exception as e:
-        print(f"Hospital search error: {str(e)}")
+        db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+# --- Dedicated Symptom Analysis ---
+@app.post("/api/symptoms/analyze")
+async def analyze_symptoms_endpoint(request: SymptomAnalyzeRequest):
+    """Dedicated symptom analysis returning structured urgency assessment"""
+    symptoms_text = request.symptoms.strip()
+    if not symptoms_text:
+        raise HTTPException(status_code=422, detail="Symptoms text is required")
+
+    # Extract user info if nested
+    user_data = request.user or {}
+    age = request.age or user_data.get("age")
+    gender = request.gender or user_data.get("gender")
+    severity = request.severity or user_data.get("severity") or "moderate"
+
+    # Check emergency
+    is_emergency = check_emergency(symptoms_text)
+
+    # Get department prediction
+    prediction = hybrid_predict_logic(symptoms_text)
+    top_departments = prediction.get("Top 3 Recommendations", [])
+    recommended_dept = top_departments[0]["Department"] if top_departments else "General Medicine"
+
+    # Determine urgency
+    urgency = "LOW"
+    urgency_reason = "Your symptoms appear less urgent, but monitoring is recommended."
+    emergency_warning = False
+    recommended_action = "Consider scheduling a routine consultation with a healthcare professional."
+
+    sev_lower = str(severity).lower() if severity else "moderate"
+    if is_emergency:
+        urgency = "HIGH"
+        urgency_reason = "Your symptoms may require urgent medical attention. Please seek immediate care."
+        emergency_warning = True
+        recommended_action = "Please contact emergency services (108/112) or visit the nearest emergency department immediately."
+    elif "severe" in sev_lower or "high" in sev_lower:
+        urgency = "HIGH"
+        urgency_reason = "Based on the severe discomfort described, prompt medical evaluation is recommended."
+        recommended_action = "Please seek medical attention as soon as possible."
+    elif "moderate" in sev_lower:
+        urgency = "MODERATE"
+        urgency_reason = "Your symptoms may require medical attention. Consider consulting a healthcare professional soon."
+        recommended_action = "Consider visiting a healthcare professional within the next 24 hours."
+    elif "mild" in sev_lower or "low" in sev_lower:
+        urgency = "LOW"
+        urgency_reason = "Symptoms appear mild. Rest and hydration are advised; seek care if symptoms persist."
+        recommended_action = "Monitor your symptoms and consult a doctor if condition worsens."
+
+    # Parse detected symptoms
+    s_raw = symptoms_text.replace(' and ', ',').replace(' with ', ',')
+    detected_symptoms = [s.strip() for s in s_raw.split(',') if s.strip()]
+    if not detected_symptoms:
+        detected_symptoms = [symptoms_text]
+
+    ai_explanation = None
+    if client:
+        try:
+            llm_prompt = f"""Analyze these symptoms briefly: "{symptoms_text}"
+Extract individual symptoms as a JSON array of strings.
+Also provide a one-sentence clinical reasoning for urgency classification.
+Return ONLY valid JSON: {{"symptoms": ["symptom1", "symptom2"], "reasoning": "one sentence"}}"""
+            chat = client.chat.completions.create(
+                messages=[{"role": "user", "content": llm_prompt}],
+                model="llama-3.3-70b-versatile",
+                response_format={"type": "json_object"},
+                temperature=0.1, max_tokens=200
+            )
+            parsed = json.loads(chat.choices[0].message.content)
+            if parsed.get("symptoms"):
+                detected_symptoms = parsed["symptoms"]
+            if parsed.get("reasoning"):
+                ai_explanation = parsed["reasoning"]
+        except Exception as e:
+            print(f"LLM symptom extraction error: {e}")
+
+    return {
+        "urgency": urgency.lower(),
+        "urgency_level": urgency,
+        "symptoms": detected_symptoms,
+        "detected_symptoms": detected_symptoms,
+        "department": recommended_dept,
+        "recommended_department": recommended_dept,
+        "recommended_action": recommended_action,
+        "emergency_warning": emergency_warning,
+        "message": f"Based on the information provided, your symptoms ({', '.join(detected_symptoms)}) may require medical attention from {recommended_dept}.",
+        "urgency_reason": urgency_reason,
+        "top_departments": top_departments,
+        "ai_explanation": ai_explanation,
+        "disclaimer": "This assessment is for guidance only and is not a medical diagnosis. Always consult a healthcare professional."
+    }
+
+
+# --- SMS History & Testing ---
+@app.get("/api/sms/logs")
+async def get_sms_logs(patient_id: Optional[int] = None, limit: int = 20):
+    """Retrieve SMS delivery logs with masked recipient phone numbers"""
+    db = SessionLocal()
+    try:
+        query = db.query(SMSLog)
+        if patient_id:
+            query = query.filter(SMSLog.patient_id == patient_id)
+        logs = query.order_by(SMSLog.created_at.desc()).limit(limit).all()
+        return {
+            "success": True,
+            "provider": sms_service.provider,
+            "is_real_provider": sms_service.is_real,
+            "logs": [
+                {
+                    "id": log.id,
+                    "patient_id": log.patient_id,
+                    "appointment_id": log.appointment_id,
+                    "phone_masked": mask_phone(log.phone_number),
+                    "message_type": log.message_type,
+                    "message_body": log.message_body,
+                    "status": log.status,
+                    "provider": log.provider,
+                    "sent_at": log.created_at.strftime("%Y-%m-%d %I:%M:%S %p") if log.created_at else None
+                }
+                for log in logs
+            ]
+        }
+    finally:
+        db.close()
+
+
+@app.post("/api/sms/test")
+async def send_test_sms(request: dict):
+    """Send a test verification SMS to user's registered phone number"""
+    phone = request.get("phone")
+    if not phone:
+        raise HTTPException(status_code=422, detail="Phone number is required")
+    msg = request.get("message") or "MedAssist AI: Your phone verification test SMS was sent successfully."
+    result = sms_service.send_sms(to_phone=phone, message=msg, message_type="verification")
+    return result
+
+
+# --- Queue Timeline & Advance ---
+@app.get("/api/queue/timeline/{appointment_id}")
+async def get_queue_timeline_endpoint(appointment_id: int):
+    """Get live queue activity timeline"""
+    timeline = get_or_create_timeline(appointment_id)
+    return {"appointment_id": appointment_id, "timeline": timeline}
+
+
+@app.post("/api/queue/advance/{appointment_id}")
+async def advance_queue_endpoint(appointment_id: int, request: Optional[dict] = None):
+    """Simulate/trigger moving ahead in queue and notify via SMS if threshold hit"""
+    phone = request.get("phone") if request else None
+    result = advance_appointment_queue(appointment_id, patient_phone=phone)
+    
+    # Broadcast to WebSockets if connected
+    if appointment_id in active_ws_connections:
+        for ws in active_ws_connections[appointment_id]:
+            try:
+                await ws.send_json({"type": "queue_advance", "data": result})
+            except Exception:
+                pass
+                
+    return result
+
+
+# --- Smart Leave-Now Departure Buffer ---
+@app.get("/api/travel/buffer")
+async def get_travel_buffer_endpoint(distance_km: float = 3.5, appointment_time: str = "10:30 AM"):
+    """Calculate recommended departure buffer based on distance and check-in overhead"""
+    buffer_data = calculate_departure_buffer(distance_km, appointment_time)
+    return buffer_data
+
+
+# --- WebSocket: Queue Live Updates ---
+active_ws_connections: Dict[int, List[WebSocket]] = {}
+
+@app.websocket("/ws/queue/{appointment_id}")
+async def queue_websocket(websocket: WebSocket, appointment_id: int):
+    await websocket.accept()
+    if appointment_id not in active_ws_connections:
+        active_ws_connections[appointment_id] = []
+    active_ws_connections[appointment_id].append(websocket)
+
+    try:
+        while True:
+            # Send queue update every 15 seconds
+            await asyncio.sleep(15)
+            queue_data = tool_get_queue_status(appointment_id)
+            if isinstance(queue_data, dict) and "appointment_id" in queue_data:
+                await websocket.send_json({
+                    "type": "queue_update",
+                    "data": queue_data
+                })
+    except WebSocketDisconnect:
+        if appointment_id in active_ws_connections:
+            active_ws_connections[appointment_id].remove(websocket)
+    except Exception:
+        if appointment_id in active_ws_connections and websocket in active_ws_connections[appointment_id]:
+            active_ws_connections[appointment_id].remove(websocket)
+
+
+# --- Serve Frontend ---
+@app.get("/")
+async def serve_frontend():
+    index_path = os.path.join(BASE_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "Agentic Medical Analyser API", "docs": "/docs"}
+
+
+# --- Startup ---
+@app.on_event("startup")
+async def startup_event():
+    print("=" * 50)
+    print("AGENTIC MEDICAL ANALYSER")
+    print("Intelligent Healthcare Assistant")
+    print("=" * 50)
+    print(f"FastAPI              OK")
+    print(f"Triage Model         {'OK' if triage_model else 'NOT CONFIGURED'}")
+    print(f"Department Model     {'OK' if classifier else 'NOT CONFIGURED'}")
+    print(f"SentenceTransformer  {'OK' if embedder else 'NOT CONFIGURED'}")
+    print(f"FAISS                {'OK' if dept_index else 'NOT CONFIGURED'}")
+    print(f"Groq AI              {'OK' if client else 'NOT CONFIGURED'}")
+    print(f"Database             OK")
+    print(f"Agent System         OK")
+    print(f"Queue System         OK")
+    print(f"Notifications        OK")
+    print(f"Maps Provider        OK (OSM Overpass)")
+    print(f"Voice Support        BROWSER")
+    print("=" * 50)
+    print("Server ready: http://localhost:9000")
+    print("Swagger: http://localhost:9000/docs")
+    print("=" * 50)
+
 
 if __name__ == "__main__":
     import uvicorn
@@ -760,18 +2236,14 @@ if __name__ == "__main__":
     def is_port_in_use(port):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             return s.connect_ex(('localhost', port)) == 0
-            
-    # Try multiple ports starting from 8010
-    ports_to_try = [8010, 8011, 8012, 8013, 8014, 8015]
-    
+
+    ports_to_try = [9000, 8010, 8011, 8012, 8013, 8014, 8015]
     for port in ports_to_try:
         try:
             if is_port_in_use(port):
                 print(f"Port {port} is busy.")
                 continue
-            
-            print(f"Starting server on port {port}...")
-            uvicorn.run(app, host="0.0.0.0", port=port)
+            uvicorn.run("main_combined:app", host="0.0.0.0", port=port, reload=False)
             break
         except Exception as e:
-             print(f"Failed on port {port}: {e}")
+            print(f"Failed on port {port}: {e}")

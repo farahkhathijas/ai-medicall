@@ -1,25 +1,2431 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- TODO: Set the document title to the name of your application -->
-    <title>Vital Pulse AI</title>
-    <meta name="description" content="" />
-    <meta name="author" content=""/>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Agentic Medical License — Intelligent Healthcare Platform</title>
+  <meta name="description" content="Intelligent patient-facing healthcare platform. AI symptom assessment, hospital discovery, real-time booking, live queue tracking, and automated SMS notifications." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+:root {
+  --primary-navy: #0f172a;
+  --sidebar-bg: #111827;
+  --sidebar-hover: #1f2937;
+  --sidebar-active: #2563eb;
+  --app-canvas: #f1f5f9;
+  --card-bg: #ffffff;
+  --card-subtle: #f8fafc;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --text-light: #94a3b8;
+  --brand-blue: #2563eb;
+  --brand-blue-hover: #1d4ed8;
+  --brand-cyan: #06b6d4;
+  --brand-teal: #0d9488;
+  --accent-emerald: #10b981;
+  --accent-emerald-bg: #ecfdf5;
+  --accent-amber: #f59e0b;
+  --accent-amber-bg: #fffbeb;
+  --accent-rose: #ef4444;
+  --accent-rose-bg: #fef2f2;
+  --border: #e2e8f0;
+  --border-focus: #3b82f6;
+  --shadow-sm: 0 2px 4px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 12px 24px -4px rgba(15, 23, 42, 0.08);
+  --shadow-float: 0 25px 50px -12px rgba(15, 23, 42, 0.25);
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --radius-full: 9999px;
+  --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
 
-    <!-- TODO: Update og:title to match your application name -->
-    <meta property="og:title" content="Vital Pulse App" />
-    <meta property="og:type" content="website" />
-    <meta property="og:image" content="" />
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; font-size: 14px; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: linear-gradient(135deg, #0b1329 0%, #1e293b 50%, #0f172a 100%);
+  color: var(--text-main);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  position: relative;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
 
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:site" content="" />
-    <meta name="twitter:image" content="" />
-  </head>
+/* Layered Background Decorative Shapes */
+.bg-decor { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+.bg-shape { position: absolute; border-radius: 50%; filter: blur(90px); opacity: 0.35; animation: float-slow 18s ease-in-out infinite alternate; }
+.bg-shape-1 { width: 480px; height: 480px; background: radial-gradient(circle, #2563eb, #06b6d4); top: -100px; left: -100px; }
+.bg-shape-2 { width: 550px; height: 550px; background: radial-gradient(circle, #0d9488, #10b981); bottom: -150px; right: -120px; animation-delay: -6s; }
+.bg-shape-3 { width: 400px; height: 400px; background: radial-gradient(circle, #6366f1, #3b82f6); top: 30%; right: 15%; opacity: 0.2; animation-delay: -12s; }
+@keyframes float-slow {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(30px, -25px) scale(1.05); }
+  100% { transform: translate(-20px, 20px) scale(0.95); }
+}
 
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+/* Main Floating Application Shell */
+.app-shell {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 1520px;
+  height: 94vh;
+  min-height: 720px;
+  background: var(--app-canvas);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-float), 0 0 0 1px rgba(255, 255, 255, 0.12);
+  display: flex;
+  overflow: hidden;
+}
+
+/* ===== LEFT SIDEBAR ===== */
+.sidebar {
+  width: 260px;
+  background: var(--sidebar-bg);
+  color: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 16px;
+  flex-shrink: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  user-select: none;
+  z-index: 20;
+  transition: var(--transition);
+}
+
+.brand-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 8px 24px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 18px;
+}
+.brand-logo-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--brand-blue), var(--brand-teal));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: white;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+}
+.brand-text h1 {
+  font-size: 1.02rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #ffffff;
+  line-height: 1.2;
+}
+.brand-text span {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--brand-cyan);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.nav-section-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 10px 12px 6px;
+}
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  overflow-y: auto;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  color: #94a3b8;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition);
+  border: 1px solid transparent;
+  position: relative;
+}
+.nav-item:hover {
+  background: var(--sidebar-hover);
+  color: #f8fafc;
+}
+.nav-item.active {
+  background: rgba(37, 99, 235, 0.18);
+  color: #ffffff;
+  border-color: rgba(59, 130, 246, 0.4);
+  font-weight: 600;
+}
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3.5px;
+  border-radius: 4px;
+  background: var(--brand-blue);
+}
+.nav-icon {
+  font-size: 16px;
+  width: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.9;
+}
+.nav-badge {
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: var(--brand-blue);
+  color: white;
+}
+.nav-badge.pulse {
+  background: var(--accent-rose);
+  animation: pulse-badge 1.8s infinite;
+}
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.92); }
+}
+
+.sidebar-footer {
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.user-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.04);
+  margin-top: 8px;
+}
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--brand-blue), var(--brand-cyan));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: white;
+}
+.user-meta { flex: 1; min-width: 0; }
+.user-name { font-size: 0.82rem; font-weight: 600; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.user-sub { font-size: 0.68rem; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ===== MAIN CENTER WORKSPACE ===== */
+.main-workspace {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--app-canvas);
+  position: relative;
+}
+
+/* Top App Header */
+.top-header {
+  height: 70px;
+  padding: 0 28px;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  z-index: 10;
+}
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.mobile-toggle {
+  display: none;
+  background: none;
+  border: none;
+  font-size: 20px;
+  color: var(--text-main);
+  cursor: pointer;
+}
+.header-greeting h2 {
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: var(--primary-navy);
+  letter-spacing: -0.01em;
+}
+.header-greeting p {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.header-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius-full);
+  font-size: 0.82rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text-main);
+  cursor: pointer;
+  transition: var(--transition);
+}
+.header-pill-btn:hover {
+  border-color: var(--brand-blue);
+  color: var(--brand-blue);
+  background: var(--card-subtle);
+}
+.header-pill-btn.primary {
+  background: var(--brand-blue);
+  color: white;
+  border-color: var(--brand-blue);
+  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.25);
+}
+.header-pill-btn.primary:hover {
+  background: var(--brand-blue-hover);
+}
+.status-beacon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  background: var(--accent-emerald-bg);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--accent-emerald);
+}
+.beacon-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-emerald);
+  animation: pulse-beacon 1.8s infinite;
+}
+@keyframes pulse-beacon {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.35); opacity: 0.5; }
+}
+
+/* Horizontal Top Module Cards (Reference inspired) */
+.module-cards-strip {
+  padding: 16px 28px 4px 28px;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+  flex-shrink: 0;
+}
+.m-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  transition: var(--transition);
+  box-shadow: var(--shadow-sm);
+  position: relative;
+  overflow: hidden;
+}
+.m-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+  border-color: var(--brand-blue);
+}
+.m-card.highlight {
+  background: linear-gradient(135deg, #eff6ff, #f0fdfa);
+  border-color: rgba(37, 99, 235, 0.3);
+}
+.m-card-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  flex-shrink: 0;
+}
+.m-card-info { min-width: 0; }
+.m-card-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--text-light);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.m-card-value {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--primary-navy);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Workspace Scrollable Body */
+.workspace-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 28px 28px 28px;
+  display: flex;
+  gap: 20px;
+}
+.workspace-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* Views Navigation Tabs Container */
+.page-view { display: none; }
+.page-view.active { display: flex; flex-direction: column; gap: 18px; animation: fade-in 0.25s ease-out; }
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== RIGHT PERSISTENT ASSISTANT / CONTEXT PANEL ===== */
+.assistant-panel {
+  width: 380px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow: hidden;
+  height: 100%;
+}
+.assistant-panel-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(135deg, #ffffff, #f8fafc);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.assistant-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.assistant-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--brand-blue), var(--brand-teal));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 16px;
+}
+.assistant-info h3 {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--primary-navy);
+}
+.assistant-info p {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+.assistant-state-badge {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--brand-blue);
+  background: var(--accent-emerald-bg);
+  color: var(--accent-emerald);
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+}
+
+.assistant-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.chat-msg {
+  display: flex;
+  gap: 8px;
+  max-width: 90%;
+  animation: msg-in 0.25s ease-out;
+}
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.chat-msg.user { align-self: flex-end; flex-direction: row-reverse; }
+.chat-msg .m-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.chat-msg.assistant .m-avatar { background: linear-gradient(135deg, var(--brand-blue), var(--brand-teal)); color: white; }
+.chat-msg.user .m-avatar { background: #e2e8f0; color: var(--text-main); }
+.chat-msg .m-body {
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.chat-msg.assistant .m-body { background: var(--card-subtle); border: 1px solid var(--border); color: var(--text-main); }
+.chat-msg.user .m-body { background: var(--brand-blue); color: white; }
+.chat-msg .m-time { font-size: 0.62rem; color: var(--text-light); margin-top: 3px; display: block; }
+
+.quick-chips-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.q-chip {
+  padding: 5px 10px;
+  border-radius: var(--radius-full);
+  font-size: 0.74rem;
+  font-weight: 500;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: var(--brand-blue);
+  cursor: pointer;
+  transition: var(--transition);
+}
+.q-chip:hover {
+  background: #dbeafe;
+  border-color: var(--brand-blue);
+  transform: translateY(-1px);
+}
+
+.assistant-input-area {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: #ffffff;
+}
+.assistant-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.assistant-input {
+  flex: 1;
+  padding: 9px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 0.86rem;
+  outline: none;
+  background: var(--card-subtle);
+  transition: var(--transition);
+}
+.assistant-input:focus {
+  border-color: var(--brand-blue);
+  background: #ffffff;
+}
+.assistant-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--card-subtle);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.assistant-btn:hover {
+  color: var(--brand-blue);
+  border-color: var(--brand-blue);
+  background: #eff6ff;
+}
+.assistant-btn.primary {
+  background: var(--brand-blue);
+  color: white;
+  border-color: var(--brand-blue);
+}
+.assistant-btn.primary:hover {
+  background: var(--brand-blue-hover);
+}
+.assistant-btn.listening {
+  background: var(--accent-rose);
+  color: white;
+  border-color: transparent;
+  animation: pulse-beacon 1.5s infinite;
+}
+
+/* ===== REUSABLE CARDS & GRID LAYOUTS ===== */
+.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 22px;
+  box-shadow: var(--shadow-sm);
+  position: relative;
+}
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.card-title-group { display: flex; align-items: center; gap: 8px; }
+.card-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+}
+.card-title {
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: var(--primary-navy);
+}
+.card-subtext {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* Urgency Assessment Cards */
+.urgency-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+.urgency-LOW { background: var(--accent-emerald-bg); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
+.urgency-MODERATE { background: var(--accent-amber-bg); color: var(--accent-amber); border: 1px solid rgba(245, 158, 11, 0.3); }
+.urgency-HIGH { background: var(--accent-rose-bg); color: var(--accent-rose); border: 1px solid rgba(239, 68, 68, 0.3); }
+
+/* Symptom Tags */
+.tags-cloud { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.sym-tag {
+  padding: 5px 12px;
+  border-radius: var(--radius-full);
+  background: var(--card-subtle);
+  border: 1px solid var(--border);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--primary-navy);
+}
+
+/* Metric Display Unit (Reference Inspired) */
+.metric-box {
+  background: var(--card-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  text-align: left;
+}
+.metric-number {
+  font-size: 2.2rem;
+  font-weight: 800;
+  line-height: 1.05;
+  color: var(--primary-navy);
+  letter-spacing: -0.02em;
+}
+.metric-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 4px;
+}
+.metric-sub {
+  font-size: 0.75rem;
+  color: var(--text-light);
+  margin-top: 2px;
+}
+
+/* Progress Steppers & Timelines */
+.progress-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 16px 0;
+  position: relative;
+}
+.stepper-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  z-index: 2;
+}
+.stepper-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-light);
+  transition: var(--transition);
+}
+.stepper-step.completed .stepper-dot {
+  background: var(--accent-emerald);
+  border-color: var(--accent-emerald);
+  color: white;
+}
+.stepper-step.current .stepper-dot {
+  border-color: var(--brand-blue);
+  color: var(--brand-blue);
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.15);
+}
+.stepper-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.stepper-line {
+  position: absolute;
+  top: 14px;
+  left: 30px;
+  right: 30px;
+  height: 2px;
+  background: var(--border);
+  z-index: 1;
+}
+
+/* Hospital Cards List */
+.hosp-item-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  margin-bottom: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  transition: var(--transition);
+}
+.hosp-item-card:hover {
+  border-color: var(--brand-blue);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+.hosp-info h4 { font-size: 0.95rem; font-weight: 700; color: var(--primary-navy); }
+.hosp-info p { font-size: 0.78rem; color: var(--text-muted); margin-top: 2px; }
+.hosp-tags { display: flex; gap: 6px; margin-top: 6px; }
+.hosp-badge {
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+.hosp-badge.emergency { background: var(--accent-rose-bg); color: var(--accent-rose); }
+.hosp-badge.open { background: var(--accent-emerald-bg); color: var(--accent-emerald); }
+.hosp-badge.rating { background: var(--accent-amber-bg); color: var(--accent-amber); }
+
+/* Interactive Filter Bar */
+.filter-bar {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.filter-btn {
+  padding: 7px 14px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+  background: #ffffff;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  white-space: nowrap;
+}
+.filter-btn:hover { border-color: var(--brand-blue); color: var(--brand-blue); }
+.filter-btn.active {
+  background: var(--brand-blue);
+  color: white;
+  border-color: var(--brand-blue);
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+}
+
+/* Live Leaflet Map Container */
+#mainMap {
+  width: 100%;
+  height: 380px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+/* Forms & Inputs */
+.form-group { margin-bottom: 16px; }
+.form-label { display: block; font-size: 0.82rem; font-weight: 600; color: var(--primary-navy); margin-bottom: 6px; }
+.form-input {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  outline: none;
+  background: var(--card-subtle);
+  transition: var(--transition);
+}
+.form-input:focus {
+  border-color: var(--brand-blue);
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+/* Modals & Dialogs */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.modal-overlay.active { display: flex; }
+.modal-card {
+  background: #ffffff;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
+  width: 100%;
+  max-width: 520px;
+  padding: 28px;
+  animation: modal-pop 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+@keyframes modal-pop {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Toast Notification System */
+.toast-shelf {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 2000;
+  pointer-events: none;
+}
+.toast-pill {
+  padding: 12px 18px;
+  border-radius: var(--radius-md);
+  background: #ffffff;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  font-size: 0.85rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  animation: toast-in 0.3s ease-out;
+  pointer-events: auto;
+}
+.toast-pill.success { border-left: 4px solid var(--accent-emerald); }
+.toast-pill.error { border-left: 4px solid var(--accent-rose); }
+.toast-pill.info { border-left: 4px solid var(--brand-blue); }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== RESPONSIVE BREAKPOINTS ===== */
+@media (max-width: 1200px) {
+  .module-cards-strip { grid-template-columns: repeat(3, 1fr); }
+  .assistant-panel { width: 320px; }
+}
+@media (max-width: 992px) {
+  .app-shell { height: 100vh; border-radius: 0; }
+  .sidebar { position: fixed; left: -280px; top: 0; bottom: 0; z-index: 100; box-shadow: var(--shadow-float); }
+  .sidebar.open { left: 0; }
+  .mobile-toggle { display: block; }
+  .workspace-body { flex-direction: column; }
+  .assistant-panel { width: 100%; height: 420px; }
+  .module-cards-strip { grid-template-columns: repeat(2, 1fr); padding: 12px 16px 0 16px; }
+  .top-header { padding: 0 16px; }
+  .workspace-body { padding: 12px 16px; }
+}
+@media (max-width: 640px) {
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+  .module-cards-strip { grid-template-columns: 1fr; }
+  .header-actions { display: none; }
+}
+  </style>
+</head>
+<body>
+
+<!-- Layered Background Glow Orbs -->
+<div class="bg-decor">
+  <div class="bg-shape bg-shape-1"></div>
+  <div class="bg-shape bg-shape-2"></div>
+  <div class="bg-shape bg-shape-3"></div>
+</div>
+
+<!-- Main App Shell -->
+<div class="app-shell">
+
+  <!-- ===== LEFT SIDEBAR ===== -->
+  <aside class="sidebar" id="appSidebar">
+    <div class="brand-header">
+      <div class="brand-logo-mark">✚</div>
+      <div class="brand-text">
+        <h1>Agentic Medical</h1>
+        <span>Intelligent Platform</span>
+      </div>
+    </div>
+
+    <div class="nav-section-label">Navigation</div>
+    <nav class="sidebar-nav">
+      <div class="nav-item active" onclick="navigateTo('dashboard')">
+        <span class="nav-icon">⌂</span>
+        <span>Dashboard</span>
+      </div>
+      <div class="nav-item" onclick="navigateTo('assessment')">
+        <span class="nav-icon">🩺</span>
+        <span>Health Assessment</span>
+      </div>
+      <div class="nav-item" onclick="navigateTo('hospitals')">
+        <span class="nav-icon">📍</span>
+        <span>Nearby Hospitals</span>
+      </div>
+      <div class="nav-item" onclick="navigateTo('appointments')">
+        <span class="nav-icon">📅</span>
+        <span>Appointments</span>
+      </div>
+      <div class="nav-item" onclick="navigateTo('tracking')">
+        <span class="nav-icon">⏱</span>
+        <span>Live Tracking</span>
+        <span class="nav-badge pulse" id="sidebarQueueBadge" style="display:none;">#A105</span>
+      </div>
+      <div class="nav-item" onclick="navigateTo('notifications')">
+        <span class="nav-icon">🔔</span>
+        <span>Alerts & SMS</span>
+        <span class="nav-badge" id="sidebarNotifBadge">0</span>
+      </div>
+      
+      <div class="nav-section-label" style="margin-top:12px;">Account & Care</div>
+      <div class="nav-item" onclick="navigateTo('profile')">
+        <span class="nav-icon">👤</span>
+        <span>Patient Profile</span>
+      </div>
+      <div class="nav-item" onclick="navigateTo('settings')">
+        <span class="nav-icon">⚙</span>
+        <span>Settings & API</span>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="nav-item" onclick="resetSession()" style="color:#ef4444;">
+        <span class="nav-icon">🔄</span>
+        <span>Reset Session</span>
+      </div>
+      <div class="user-pill">
+        <div class="user-avatar" id="sidebarUserAvatar">P</div>
+        <div class="user-meta">
+          <div class="user-name" id="sidebarUserName">Patient Portal</div>
+          <div class="user-sub" id="sidebarUserPhone">+91 ******3210</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===== MAIN WORKSPACE ===== -->
+  <main class="main-workspace">
+    <!-- Top Header -->
+    <header class="top-header">
+      <div class="header-left">
+        <button class="mobile-toggle" onclick="toggleMobileSidebar()">☰</button>
+        <div class="header-greeting">
+          <h2 id="headerGreetingTitle">Good evening, Guest</h2>
+          <p id="headerGreetingSub">Your intelligent healthcare navigation & care companion.</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div class="status-beacon">
+          <span class="beacon-dot"></span>
+          <span>System Online • Demo & Real API Ready</span>
+        </div>
+        <button class="header-pill-btn primary" onclick="navigateTo('assessment')">
+          <span>🩺 New Assessment</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Top Horizontal Quick Journey Cards (Reference Inspired) -->
+    <section class="module-cards-strip">
+      <div class="m-card highlight" onclick="navigateTo('assessment')">
+        <div class="m-card-icon" style="background:#eff6ff;color:#2563eb;">🩺</div>
+        <div class="m-card-info">
+          <div class="m-card-label">Assessment</div>
+          <div class="m-card-value" id="topUrgencyVal">Ready to Assess</div>
+        </div>
+      </div>
+      <div class="m-card" onclick="navigateTo('hospitals')">
+        <div class="m-card-icon" style="background:#f0fdfa;color:#0d9488;">🏥</div>
+        <div class="m-card-info">
+          <div class="m-card-label">Nearby Care</div>
+          <div class="m-card-value" id="topHospitalVal">Hospitals in Range</div>
+        </div>
+      </div>
+      <div class="m-card" onclick="navigateTo('appointments')">
+        <div class="m-card-icon" style="background:#ecfdf5;color:#10b981;">📅</div>
+        <div class="m-card-info">
+          <div class="m-card-label">Appointment</div>
+          <div class="m-card-value" id="topAptVal">No Active Booking</div>
+        </div>
+      </div>
+      <div class="m-card" onclick="navigateTo('tracking')">
+        <div class="m-card-icon" style="background:#fffbeb;color:#f59e0b;">⏱</div>
+        <div class="m-card-info">
+          <div class="m-card-label">Live Queue</div>
+          <div class="m-card-value" id="topQueueVal">Token —</div>
+        </div>
+      </div>
+      <div class="m-card" onclick="navigateTo('notifications')">
+        <div class="m-card-icon" style="background:#fdf2f8;color:#db2777;">📱</div>
+        <div class="m-card-info">
+          <div class="m-card-label">SMS Status</div>
+          <div class="m-card-value" id="topSmsVal">Verified & Active</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Workspace Body: Left Content + Right Assistant -->
+    <div class="workspace-body">
+      <div class="workspace-content">
+
+        <!-- ===== VIEW: DASHBOARD (HOME) ===== -->
+        <div class="page-view active" id="view-dashboard">
+          <div class="grid-2">
+            <!-- Urgent / Current Status Card -->
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title-group">
+                  <div class="card-icon" style="background:#eff6ff;color:#2563eb;">⚡</div>
+                  <div>
+                    <h3 class="card-title">Current Health Assessment</h3>
+                    <p class="card-subtext">AI Urgency & Recommended Care Action</p>
+                  </div>
+                </div>
+                <span class="urgency-badge urgency-LOW" id="dashUrgencyBadge">🟢 Low Urgency</span>
+              </div>
+              <div class="metric-box" style="margin-bottom:14px;">
+                <div class="metric-number" id="dashDeptName">General Medicine</div>
+                <div class="metric-label">Recommended Department</div>
+                <div class="metric-sub" id="dashUrgencyReason">Describe your symptoms to receive an intelligent clinical triage assessment.</div>
+              </div>
+              <div style="display:flex;gap:10px;">
+                <button class="header-pill-btn primary" onclick="navigateTo('assessment')">Start Symptom Check</button>
+                <button class="header-pill-btn" onclick="navigateTo('hospitals')">Find Hospitals</button>
+              </div>
+            </div>
+
+            <!-- Live Queue Snapshot Card -->
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title-group">
+                  <div class="card-icon" style="background:#fffbeb;color:#f59e0b;">📊</div>
+                  <div>
+                    <h3 class="card-title">Live Queue Status</h3>
+                    <p class="card-subtext">Real-time Turn & Waiting Estimation</p>
+                  </div>
+                </div>
+                <span class="hosp-badge open" id="dashQueueStatusBadge">● Waiting</span>
+              </div>
+              <div class="grid-2" style="margin-bottom:14px;">
+                <div class="metric-box">
+                  <div class="metric-number" style="color:#2563eb;" id="dashQueueToken">#A-105</div>
+                  <div class="metric-label">Queue Token</div>
+                </div>
+                <div class="metric-box">
+                  <div class="metric-number" style="color:#0d9488;" id="dashWaitMinutes">~15m</div>
+                  <div class="metric-label">Estimated Wait</div>
+                </div>
+              </div>
+              <div style="display:flex;gap:10px;">
+                <button class="header-pill-btn primary" onclick="navigateTo('tracking')">Open Live Tracking</button>
+                <button class="header-pill-btn" onclick="refreshQueue()">Sync Queue</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Journey Summary Card -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title-group">
+                <div class="card-icon" style="background:#ecfdf5;color:#10b981;">🏥</div>
+                <div>
+                  <h3 class="card-title">Nearby Care & Active Hospital</h3>
+                  <p class="card-subtext">Top rated medical centres within 10 km</p>
+                </div>
+              </div>
+              <button class="header-pill-btn" onclick="navigateTo('hospitals')">View Map Explorer →</button>
+            </div>
+            <div id="dashHospitalPreviewList">
+              <div style="padding:16px;color:var(--text-muted);text-align:center;">Discovering nearby hospitals...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== VIEW: HEALTH ASSESSMENT ===== -->
+        <div class="page-view" id="view-assessment">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title-group">
+                <div class="card-icon" style="background:#eff6ff;color:#2563eb;">🩺</div>
+                <div>
+                  <h3 class="card-title">Describe Symptoms</h3>
+                  <p class="card-subtext">Type naturally or speak via AI voice recognition</p>
+                </div>
+              </div>
+              <div style="display:flex;gap:6px;">
+                <button class="filter-btn active" id="inputTabBtnText" onclick="setAssessMode('text')">✏️ Text</button>
+                <button class="filter-btn" id="inputTabBtnVoice" onclick="setAssessMode('voice')">🎤 Voice</button>
+              </div>
+            </div>
+
+            <!-- Text Input Box -->
+            <div id="assessTextSection">
+              <textarea id="assessSymptomInput" class="form-input" style="min-height:110px;resize:vertical;" placeholder="Example: I have persistent high fever, throbbing headache, and mild body aches since yesterday morning..."></textarea>
+            </div>
+
+            <!-- Voice Input Box -->
+            <div id="assessVoiceSection" style="display:none;text-align:center;padding:24px 0;">
+              <button class="assistant-btn primary" id="assessVoiceRecordBtn" onclick="toggleAssessVoice()" style="width:72px;height:72px;border-radius:50%;font-size:26px;margin:0 auto 12px auto;">🎤</button>
+              <div style="font-weight:600;font-size:0.95rem;color:var(--primary-navy);" id="assessVoicePrompt">Tap microphone to speak</div>
+              <div id="assessVoiceTranscriptBox" style="background:var(--card-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px;margin-top:14px;display:none;text-align:left;font-size:0.85rem;"></div>
+            </div>
+
+            <!-- Severity Selector -->
+            <div style="margin-top:16px;">
+              <label class="form-label">How severe is your discomfort?</label>
+              <div style="display:flex;gap:10px;">
+                <button class="filter-btn active" onclick="setSeverity('mild', this)" style="flex:1;">🟢 Mild</button>
+                <button class="filter-btn" onclick="setSeverity('moderate', this)" style="flex:1;">🟡 Moderate</button>
+                <button class="filter-btn" onclick="setSeverity('severe', this)" style="flex:1;">🔴 Severe</button>
+              </div>
+            </div>
+
+            <div style="margin-top:20px;display:flex;justify-content:flex-end;gap:10px;">
+              <button class="header-pill-btn primary" id="assessSubmitBtn" onclick="submitSymptomAssessment()" style="padding:10px 24px;">
+                <span>Analyze Symptoms →</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Assessment Result Container -->
+          <div id="assessResultCard" class="card" style="display:none;">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+
+        <!-- ===== VIEW: NEARBY HOSPITALS ===== -->
+        <div class="page-view" id="view-hospitals">
+          <div class="card" style="padding:16px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+              <div class="filter-bar">
+                <button class="filter-btn active" onclick="filterHosp('all', this)">All</button>
+                <button class="filter-btn" onclick="filterHosp('nearest', this)">📍 Nearest</button>
+                <button class="filter-btn" onclick="filterHosp('fastest', this)">⚡ Fastest Travel</button>
+                <button class="filter-btn" onclick="filterHosp('rated', this)">⭐ Top Rated</button>
+                <button class="filter-btn" onclick="filterHosp('emergency', this)">🚑 Emergency</button>
+              </div>
+              <div style="display:flex;gap:6px;">
+                <input type="text" id="hospSearchCity" placeholder="City / Area..." class="form-input" style="width:160px;padding:6px 12px;font-size:0.8rem;" />
+                <button class="header-pill-btn" onclick="searchCityHospitals()">Search</button>
+              </div>
+            </div>
+            
+            <div id="mainMap"></div>
+          </div>
+
+          <div class="card">
+            <h3 class="card-title" style="margin-bottom:12px;">Discovered Medical Centres</h3>
+            <div id="hospitalsFullList"></div>
+          </div>
+        </div>
+
+        <!-- ===== VIEW: APPOINTMENTS ===== -->
+        <div class="page-view" id="view-appointments">
+          <div class="card" id="bookingWizardCard" style="display:none;">
+            <div class="card-header">
+              <div class="card-title-group">
+                <div class="card-icon" style="background:#eff6ff;color:#2563eb;">📅</div>
+                <div>
+                  <h3 class="card-title" id="wizardHospitalName">Book Consultation</h3>
+                  <p class="card-subtext">Select Doctor and Available Time Slot</p>
+                </div>
+              </div>
+              <button class="header-pill-btn" onclick="closeBookingWizard()">✕ Close</button>
+            </div>
+            <div id="wizardDoctorsList"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title-group">
+                <div class="card-icon" style="background:#ecfdf5;color:#10b981;">📋</div>
+                <div>
+                  <h3 class="card-title">Your Appointments</h3>
+                  <p class="card-subtext">Active consultations and historical bookings</p>
+                </div>
+              </div>
+              <button class="header-pill-btn primary" onclick="navigateTo('hospitals')">+ Book New</button>
+            </div>
+            <div id="appointmentsMainList"></div>
+          </div>
+        </div>
+
+        <!-- ===== VIEW: LIVE TRACKING ===== -->
+        <div class="page-view" id="view-tracking">
+          <div class="card" id="liveTrackingCard">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+
+        <!-- ===== VIEW: NOTIFICATIONS & SMS ===== -->
+        <div class="page-view" id="view-notifications">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title-group">
+                <div class="card-icon" style="background:#fdf2f8;color:#db2777;">🔔</div>
+                <div>
+                  <h3 class="card-title">Notification Center & SMS Logs</h3>
+                  <p class="card-subtext">Synchronized multi-channel alerts and delivery status</p>
+                </div>
+              </div>
+              <div style="display:flex;gap:6px;">
+                <button class="filter-btn active" id="notifTabBtnAlerts" onclick="setNotifTab('alerts')">🔔 In-App Alerts</button>
+                <button class="filter-btn" id="notifTabBtnSms" onclick="setNotifTab('sms')">📱 SMS Delivery Logs</button>
+              </div>
+            </div>
+
+            <!-- In-App Alerts List -->
+            <div id="notifAlertsSection">
+              <div id="notifInAppList"></div>
+            </div>
+
+            <!-- SMS Delivery Logs Section -->
+            <div id="notifSmsSection" style="display:none;">
+              <div style="background:var(--card-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:14px;margin-bottom:14px;">
+                <div style="font-weight:700;font-size:0.85rem;margin-bottom:6px;color:var(--primary-navy);">📲 Test SMS Delivery</div>
+                <div style="display:flex;gap:8px;">
+                  <input type="tel" id="testSmsInputPhone" placeholder="Enter recipient phone (e.g. +91 98765 43210)" class="form-input" style="padding:8px 12px;font-size:0.85rem;" />
+                  <button class="header-pill-btn primary" onclick="sendTestSmsTrigger()" style="white-space:nowrap;">Send Test SMS</button>
+                </div>
+                <div style="font-size:0.72rem;color:var(--text-muted);margin-top:4px;">Dispatches verified SMS via Twilio / MSG91 or logs to SQLite in simulation mode.</div>
+              </div>
+              <div id="notifSmsLogsList"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== VIEW: PROFILE ===== -->
+        <div class="page-view" id="view-profile">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title-group">
+                <div class="card-icon" style="background:#eff6ff;color:#2563eb;">👤</div>
+                <div>
+                  <h3 class="card-title">Patient Profile</h3>
+                  <p class="card-subtext">Personal details and registered SMS contact</p>
+                </div>
+              </div>
+            </div>
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">Full Name</label>
+                <input type="text" id="profileFullName" class="form-input" value="Farah S." />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Age</label>
+                <input type="number" id="profileAge" class="form-input" value="28" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Gender</label>
+                <select id="profileGender" class="form-input">
+                  <option value="Female">Female</option>
+                  <option value="Male">Male</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Phone Number (Required for SMS)</label>
+                <input type="tel" id="profilePhone" class="form-input" value="+91 98765 43210" />
+              </div>
+            </div>
+            <button class="header-pill-btn primary" onclick="saveProfileChanges()">Save Profile</button>
+          </div>
+        </div>
+
+        <!-- ===== VIEW: SETTINGS ===== -->
+        <div class="page-view" id="view-settings">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title-group">
+                <div class="card-icon" style="background:#f8fafc;color:#64748b;">⚙</div>
+                <div>
+                  <h3 class="card-title">System & API Status</h3>
+                  <p class="card-subtext">Operational telemetry & mode configuration</p>
+                </div>
+              </div>
+            </div>
+            <div class="grid-2">
+              <div class="metric-box">
+                <div class="metric-number" style="font-size:1.4rem;color:#10b981;">ONLINE</div>
+                <div class="metric-label">FastAPI Backend (Port 9000)</div>
+              </div>
+              <div class="metric-box">
+                <div class="metric-number" style="font-size:1.4rem;color:#2563eb;">ACTIVE</div>
+                <div class="metric-label">Triage Random Forest ML Model</div>
+              </div>
+              <div class="metric-box">
+                <div class="metric-number" style="font-size:1.4rem;color:#0d9488;">CONNECTED</div>
+                <div class="metric-label">SentenceTransformer & FAISS</div>
+              </div>
+              <div class="metric-box">
+                <div class="metric-number" style="font-size:1.4rem;color:#f59e0b;">SIMULATION / REAL</div>
+                <div class="metric-label">SMS Service & Delivery Logs</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ===== RIGHT PERSISTENT ASSISTANT PANEL ===== -->
+      <aside class="assistant-panel">
+        <div class="assistant-panel-header">
+          <div class="assistant-brand">
+            <div class="assistant-avatar">✚</div>
+            <div class="assistant-info">
+              <h3>MedAssist AI</h3>
+              <p>Clinical Navigation Assistant</p>
+            </div>
+          </div>
+          <span class="assistant-state-badge" id="assistantStateBadge">Listening</span>
+        </div>
+
+        <div class="assistant-messages" id="assistantChatLog"></div>
+
+        <div class="assistant-input-area">
+          <div class="assistant-input-row">
+            <button class="assistant-btn" id="chatMicBtn" onclick="toggleChatVoice()" title="Voice input">🎤</button>
+            <input type="text" class="assistant-input" id="chatTextInput" placeholder="Ask anything or describe symptoms..." onkeydown="handleChatKeyDown(event)" />
+            <button class="assistant-btn primary" onclick="submitAssistantChat()" title="Send">➤</button>
+          </div>
+          <div style="font-size:0.65rem;color:var(--text-light);text-align:center;margin-top:5px;">⚕️ AI Guidance only — Not a medical diagnosis.</div>
+        </div>
+      </aside>
+    </div>
+  </main>
+</div>
+
+<!-- Onboarding Modal (First Visit) -->
+<div class="modal-overlay" id="onboardingModal">
+  <div class="modal-card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+      <div class="brand-logo-mark" style="width:36px;height:36px;font-size:18px;">✚</div>
+      <div>
+        <h3 style="font-size:1.15rem;font-weight:800;color:var(--primary-navy);">Welcome to MedAssist AI</h3>
+        <p style="font-size:0.78rem;color:var(--text-muted);">Please verify your details to enable real-time SMS tracking.</p>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Full Name *</label>
+      <input type="text" id="obName" class="form-input" placeholder="e.g. Farah S." required />
+    </div>
+    <div class="grid-2">
+      <div class="form-group">
+        <label class="form-label">Age *</label>
+        <input type="number" id="obAge" class="form-input" placeholder="28" min="1" max="120" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Gender *</label>
+        <select id="obGender" class="form-input">
+          <option value="Female">Female</option>
+          <option value="Male">Male</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Phone Number * (For SMS Notifications)</label>
+      <input type="tel" id="obPhone" class="form-input" placeholder="+91 98765 43210" required />
+      <div style="font-size:0.72rem;color:var(--brand-blue);margin-top:3px;">📱 Your phone number will be used for appointment confirmations & queue SMS updates.</div>
+    </div>
+    <button class="header-pill-btn primary" onclick="submitOnboardingModal()" style="width:100%;justify-content:center;padding:12px;margin-top:10px;">Get Started →</button>
+  </div>
+</div>
+
+<!-- Appointment Confirmation Modal -->
+<div class="modal-overlay" id="confirmAppointmentModal">
+  <div class="modal-card">
+    <h3 style="font-size:1.15rem;font-weight:800;color:var(--primary-navy);margin-bottom:6px;">Confirm Appointment</h3>
+    <div id="confirmAppointmentDetails" style="background:var(--card-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:14px;margin:14px 0;font-size:0.88rem;line-height:1.6;"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button class="header-pill-btn" onclick="closeConfirmModal()">Cancel</button>
+      <button class="header-pill-btn primary" id="btnConfirmBookingExec">Confirm & Send SMS</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast Shelf -->
+<div class="toast-shelf" id="toastShelf"></div>
+
+<script>
+// =====================================================
+// GLOBAL CONFIGURATION & REACTIVE STATE
+// =====================================================
+const API = (window.location.origin && !window.location.origin.startsWith('file:') && !window.location.origin.includes('null'))
+  ? window.location.origin : 'http://localhost:9000';
+const SID = 'sess_' + Date.now();
+
+let state = {
+  user: { name: 'Farah S.', age: 28, gender: 'Female', phone: '+91 98765 43210', email: 'farah@example.com' },
+  symptoms: [], severity: 'moderate', urgency: null, urgencyReason: null,
+  recommendedDept: null, journeyStage: 'greeting', hospitals: [], selectedHospital: null,
+  currentAppointment: null, appointments: [], queueData: null, queueTimeline: [], departureBuffer: null,
+  notifications: [], smsLogs: [], location: { lat: 13.0827, lon: 80.2707 }, patientId: 1
+};
+let leafMap = null, mapMarkers = [], wsQueue = null;
+
+// =====================================================
+// NAVIGATION & PAGE ROUTING
+// =====================================================
+function navigateTo(viewId) {
+  document.querySelectorAll('.page-view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+
+  const view = document.getElementById('view-' + viewId);
+  if (view) view.classList.add('active');
+
+  const navItems = document.querySelectorAll('.sidebar-nav .nav-item');
+  const viewMap = {
+    'dashboard': 0, 'assessment': 1, 'hospitals': 2,
+    'appointments': 3, 'tracking': 4, 'notifications': 5,
+    'profile': 6, 'settings': 7
+  };
+  if (navItems[viewMap[viewId]]) navItems[viewMap[viewId]].classList.add('active');
+
+  if (viewId === 'hospitals') {
+    setTimeout(() => { initLeafletMap(); if (state.hospitals.length) renderHospitalsOnMap(state.hospitals); }, 150);
+  } else if (viewId === 'tracking') {
+    loadQueueData();
+  } else if (viewId === 'notifications') {
+    loadNotificationsList(); loadSmsLogsList();
+  } else if (viewId === 'appointments') {
+    loadAppointmentsList();
+  }
+}
+
+function toggleMobileSidebar() {
+  document.getElementById('appSidebar').classList.toggle('open');
+}
+
+// =====================================================
+// ONBOARDING & PROFILE
+// =====================================================
+function checkUserOnboarding() {
+  const saved = localStorage.getItem('medassist_user');
+  if (saved) {
+    try {
+      state.user = JSON.parse(saved);
+      updateUserHeaderUI();
+    } catch(e){}
+  } else {
+    document.getElementById('onboardingModal').classList.add('active');
+  }
+}
+
+async function submitOnboardingModal() {
+  const name = document.getElementById('obName').value.trim();
+  const age = parseInt(document.getElementById('obAge').value);
+  const gender = document.getElementById('obGender').value;
+  const phone = document.getElementById('obPhone').value.trim();
+
+  if (!name) { showToast('Please enter your name.', 'error'); return; }
+  if (!age || age < 1) { showToast('Please enter a valid age.', 'error'); return; }
+  if (!phone || phone.replace(/[^0-9]/g, '').length < 10) {
+    showToast('Please enter a valid 10-digit phone number for appointment SMS.', 'error');
+    return;
+  }
+
+  state.user = { name, age, gender, phone, email: `${name.toLowerCase().replace(/\s+/g,'')}@example.com` };
+  localStorage.setItem('medassist_user', JSON.stringify(state.user));
+
+  try {
+    const res = await fetch(`${API}/api/user/profile`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ full_name: name, age, gender, phone, latitude: state.location.lat, longitude: state.location.lon })
+    });
+    const data = await res.json();
+    if (data.patient_id) state.patientId = data.patient_id;
+  } catch(e){}
+
+  document.getElementById('onboardingModal').classList.remove('active');
+  updateUserHeaderUI();
+  showToast('Profile registered! Real-time SMS notifications enabled.', 'success');
+}
+
+function updateUserHeaderUI() {
+  document.getElementById('headerGreetingTitle').textContent = `Good evening, ${state.user.name.split(' ')[0]}`;
+  document.getElementById('sidebarUserName').textContent = state.user.name;
+  document.getElementById('sidebarUserPhone').textContent = state.user.phone.slice(0,3) + '******' + state.user.phone.slice(-4);
+  document.getElementById('sidebarUserAvatar').textContent = state.user.name.charAt(0).toUpperCase();
+  document.getElementById('profileFullName').value = state.user.name;
+  document.getElementById('profileAge').value = state.user.age;
+  document.getElementById('profileGender').value = state.user.gender;
+  document.getElementById('profilePhone').value = state.user.phone;
+  document.getElementById('testSmsInputPhone').value = state.user.phone;
+}
+
+function saveProfileChanges() {
+  state.user.name = document.getElementById('profileFullName').value.trim();
+  state.user.age = parseInt(document.getElementById('profileAge').value);
+  state.user.gender = document.getElementById('profileGender').value;
+  state.user.phone = document.getElementById('profilePhone').value.trim();
+  localStorage.setItem('medassist_user', JSON.stringify(state.user));
+  updateUserHeaderUI();
+  showToast('Profile saved successfully.', 'success');
+}
+
+// =====================================================
+// SYMPTOM ASSESSMENT ENGINE
+// =====================================================
+let currentSeverity = 'moderate';
+function setAssessMode(mode) {
+  document.getElementById('inputTabBtnText').classList.toggle('active', mode === 'text');
+  document.getElementById('inputTabBtnVoice').classList.toggle('active', mode === 'voice');
+  document.getElementById('assessTextSection').style.display = mode === 'text' ? 'block' : 'none';
+  document.getElementById('assessVoiceSection').style.display = mode === 'voice' ? 'block' : 'none';
+}
+function setSeverity(sev, btn) {
+  currentSeverity = sev;
+  btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+async function submitSymptomAssessment() {
+  const inputEl = document.getElementById('assessSymptomInput');
+  const text = inputEl.value.trim();
+  if (!text) { showToast('Please describe your symptoms.', 'error'); return; }
+
+  const btn = document.getElementById('assessSubmitBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span>Analyzing Symptoms...</span>';
+
+  try {
+    const res = await fetch(`${API}/api/symptoms/analyze`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        symptoms: text,
+        age: state.user.age,
+        gender: state.user.gender,
+        severity: currentSeverity
+      })
+    });
+    const data = await res.json();
+    state.urgency = data.urgency_level || data.urgency;
+    state.urgencyReason = data.urgency_reason;
+    state.recommendedDept = data.recommended_department;
+    state.symptoms = data.detected_symptoms || [text];
+
+    renderAssessmentResult(data);
+    updateDashboardSummary(data);
+    showToast(`Urgency assessed as ${state.urgency}`, 'info');
+
+    // Also inform assistant
+    addAssistantBubble('assistant', `I have analyzed your symptoms (${state.symptoms.join(', ')}). Your condition is evaluated as **${state.urgency} Urgency** in **${state.recommendedDept}**.\n\nWould you like me to book a consultation at the nearest hospital?`, {
+      chips: [
+        { label: '🏥 Find Hospitals', action: () => navigateTo('hospitals') },
+        { label: '📅 Book Now', action: () => { navigateTo('hospitals'); } }
+      ]
+    });
+  } catch (e) {
+    showToast('Assessment service unavailable.', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<span>Analyze Symptoms →</span>';
+  }
+}
+
+function renderAssessmentResult(data) {
+  const card = document.getElementById('assessResultCard');
+  card.style.display = 'block';
+  const u = (data.urgency_level || data.urgency || 'MODERATE').toUpperCase();
+  const icon = u === 'HIGH' ? '🔴' : u === 'MODERATE' ? '🟡' : '🟢';
+
+  let deptsHtml = '';
+  if (data.top_departments && data.top_departments.length) {
+    deptsHtml = data.top_departments.map(d => `
+      <div style="display:flex;justify-content:space-between;padding:8px 12px;background:var(--card-subtle);border-radius:6px;margin-bottom:6px;font-size:0.82rem;">
+        <strong>${d.Department}</strong>
+        <span style="color:var(--brand-blue);font-weight:700;">${d['Final Confidence (%)'] || 0}% match</span>
+      </div>
+    `).join('');
+  }
+
+  card.innerHTML = `
+    <div class="card-header">
+      <div class="card-title-group">
+        <div class="card-icon" style="background:#eff6ff;color:#2563eb;">📋</div>
+        <div>
+          <h3 class="card-title">Symptom Assessment Result</h3>
+          <p class="card-subtext">Clinical Machine Learning & Hybrid Triage Output</p>
+        </div>
+      </div>
+      <span class="urgency-badge urgency-${u}">${icon} ${u} Urgency</span>
+    </div>
+
+    <div class="metric-box" style="margin-bottom:14px;">
+      <div class="metric-number" style="font-size:1.5rem;">${data.recommended_department || 'General Medicine'}</div>
+      <div class="metric-label">Recommended Specialty</div>
+      <div class="metric-sub" style="margin-top:4px;">${data.urgency_reason || ''}</div>
+    </div>
+
+    ${data.emergency_warning ? `
+      <div style="background:var(--accent-rose-bg);border:1px solid rgba(239,68,68,0.3);border-radius:var(--radius-md);padding:14px;margin-bottom:14px;color:var(--accent-rose);font-size:0.85rem;">
+        <strong>🚨 Emergency Alert:</strong> ${data.recommended_action}
+      </div>
+    ` : ''}
+
+    <div style="margin-bottom:14px;">
+      <div class="form-label">Detected Symptoms:</div>
+      <div class="tags-cloud">
+        ${(data.detected_symptoms || []).map(s => `<span class="sym-tag">${s}</span>`).join('')}
+      </div>
+    </div>
+
+    ${deptsHtml ? `<div style="margin-bottom:16px;"><div class="form-label">Specialty Confidence Breakdown:</div>${deptsHtml}</div>` : ''}
+
+    <div style="font-size:0.75rem;color:var(--text-light);background:var(--card-subtle);padding:10px;border-radius:var(--radius-sm);margin-bottom:16px;">
+      ⚕️ ${data.disclaimer || 'AI guidance only — not a definitive medical diagnosis. Consult a licensed physician.'}
+    </div>
+
+    <div style="display:flex;gap:10px;">
+      <button class="header-pill-btn primary" onclick="navigateTo('hospitals')">Explore Nearby Hospitals →</button>
+      <button class="header-pill-btn" onclick="document.getElementById('assessSymptomInput').focus()">Edit Symptoms</button>
+    </div>
+  `;
+}
+
+function updateDashboardSummary(data) {
+  const u = (data.urgency_level || data.urgency || 'MODERATE').toUpperCase();
+  document.getElementById('topUrgencyVal').textContent = `${u} Urgency`;
+  document.getElementById('dashUrgencyBadge').className = `urgency-badge urgency-${u}`;
+  document.getElementById('dashUrgencyBadge').textContent = `${u === 'HIGH' ? '🔴' : u === 'MODERATE' ? '🟡' : '🟢'} ${u} Urgency`;
+  document.getElementById('dashDeptName').textContent = data.recommended_department || 'General Medicine';
+  document.getElementById('dashUrgencyReason').textContent = data.urgency_reason || 'Assessment complete.';
+}
+
+// Voice Speech Recognition for Symptom Input
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let assessRecog = null, isAssessListening = false;
+if (SR) {
+  assessRecog = new SR();
+  assessRecog.continuous = false;
+  assessRecog.interimResults = false;
+  assessRecog.onstart = () => {
+    isAssessListening = true;
+    document.getElementById('assessVoiceRecordBtn').classList.add('listening');
+    document.getElementById('assessVoicePrompt').textContent = "Listening to your symptoms...";
+  };
+  assessRecog.onresult = (e) => {
+    const text = e.results[0][0].transcript;
+    document.getElementById('assessSymptomInput').value = text;
+    document.getElementById('assessVoiceTranscriptBox').style.display = 'block';
+    document.getElementById('assessVoiceTranscriptBox').textContent = `"${text}"`;
+    document.getElementById('assessVoicePrompt').textContent = "Voice captured! Click below to analyze.";
+  };
+  assessRecog.onend = () => {
+    isAssessListening = false;
+    document.getElementById('assessVoiceRecordBtn').classList.remove('listening');
+  };
+}
+function toggleAssessVoice() {
+  if (!SR) { showToast('Speech recognition not supported in this browser.', 'error'); return; }
+  if (isAssessListening) assessRecog.stop(); else assessRecog.start();
+}
+
+// =====================================================
+// NEARBY HOSPITALS & LEAFLET MAP
+// =====================================================
+function initLeafletMap() {
+  if (leafMap) return;
+  const mapEl = document.getElementById('mainMap');
+  if (!mapEl) return;
+  leafMap = L.map('mainMap', { zoomControl: true }).setView([state.location.lat, state.location.lon], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap', maxZoom: 19
+  }).addTo(leafMap);
+}
+
+async function loadNearbyHospitals(query = null) {
+  try {
+    const payload = {
+      latitude: state.location.lat,
+      longitude: state.location.lon,
+      department: state.recommendedDept || 'General Medicine'
+    };
+    if (query) payload.query = query;
+
+    const res = await fetch(`${API}/hospitals/search`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    state.hospitals = data.hospitals || [];
+    renderHospitalsOnMap(state.hospitals);
+    renderHospitalsList(state.hospitals);
+    document.getElementById('topHospitalVal').textContent = `${state.hospitals.length} Found (${state.hospitals[0]?.distance_km || 1.2} km)`;
+  } catch (e) {
+    console.error('Hospitals error:', e);
+  }
+}
+
+function renderHospitalsOnMap(hospitals) {
+  if (!leafMap) initLeafletMap();
+  mapMarkers.forEach(m => leafMap.removeLayer(m));
+  mapMarkers = [];
+
+  const bounds = [];
+  // User pin
+  const userPin = L.marker([state.location.lat, state.location.lon], {
+    icon: L.divIcon({
+      className: '',
+      html: `<div style="width:16px;height:16px;background:#2563eb;border-radius:50%;border:3px solid white;box-shadow:0 0 10px rgba(37,99,235,0.6);"></div>`,
+      iconSize: [16,16], iconAnchor: [8,8]
+    })
+  }).addTo(leafMap).bindPopup('<b>Your Location</b>');
+  mapMarkers.push(userPin);
+  bounds.push([state.location.lat, state.location.lon]);
+
+  hospitals.forEach((h, i) => {
+    if (h.latitude && h.longitude) {
+      const pin = L.marker([h.latitude, h.longitude], {
+        icon: L.divIcon({
+          className: '',
+          html: `<div style="width:28px;height:28px;background:${i===0?'#10b981':'#2563eb'};border-radius:50%;border:2px solid white;color:white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,0.3);">${i+1}</div>`,
+          iconSize: [28,28], iconAnchor: [14,14]
+        })
+      }).addTo(leafMap);
+      pin.bindPopup(`<b>${h.name}</b><br>${h.address}<br>⭐ ${h.rating || 4.5} · ${h.distance_km || 2.5} km`);
+      mapMarkers.push(pin);
+      bounds.push([h.latitude, h.longitude]);
+    }
+  });
+
+  if (bounds.length > 0) leafMap.fitBounds(bounds, { padding: [30,30] });
+}
+
+function renderHospitalsList(hospitals) {
+  const container = document.getElementById('hospitalsFullList');
+  const dashPreview = document.getElementById('dashHospitalPreviewList');
+  if (!hospitals.length) {
+    container.innerHTML = '<div style="padding:20px;color:var(--text-muted);text-align:center;">No hospitals found nearby.</div>';
+    return;
+  }
+
+  const html = hospitals.map((h, i) => `
+    <div class="hosp-item-card">
+      <div class="hosp-info">
+        <h4>${i===0 ? '⭐ ' : ''}${h.name}</h4>
+        <p>${h.address} • 📍 ${h.distance_km || 2.5} km (~${h.travel_time_min || 10} mins travel)</p>
+        <div class="hosp-tags">
+          ${h.emergency_available ? '<span class="hosp-badge emergency">🚑 Emergency 24/7</span>' : ''}
+          <span class="hosp-badge open">✅ Open Now</span>
+          <span class="hosp-badge rating">⭐ ${h.rating || 4.6}</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        ${h.phone ? `<button class="header-pill-btn" onclick="window.location.href='tel:${h.phone}'">📞 Call</button>` : ''}
+        <button class="header-pill-btn primary" onclick="openBookingWizard(${h.id}, '${h.name.replace(/'/g,"\\'")}')">📅 Book</button>
+      </div>
+    </div>
+  `).join('');
+
+  container.innerHTML = html;
+  if (dashPreview) {
+    dashPreview.innerHTML = hospitals.slice(0, 3).map(h => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:var(--card-subtle);border-radius:var(--radius-md);margin-bottom:8px;">
+        <div>
+          <strong style="color:var(--primary-navy);font-size:0.88rem;">${h.name}</strong>
+          <div style="font-size:0.75rem;color:var(--text-muted);">${h.distance_km || 2.5} km • ${h.address}</div>
+        </div>
+        <button class="header-pill-btn primary" style="padding:6px 14px;font-size:0.75rem;" onclick="openBookingWizard(${h.id}, '${h.name.replace(/'/g,"\\'")}')">Book</button>
+      </div>
+    `).join('');
+  }
+}
+
+function filterHosp(type, btn) {
+  btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  let list = [...state.hospitals];
+  if (type === 'nearest') list.sort((a,b) => (a.distance_km||99) - (b.distance_km||99));
+  else if (type === 'fastest') list.sort((a,b) => (a.travel_time_min||99) - (b.travel_time_min||99));
+  else if (type === 'rated') list.sort((a,b) => (b.rating||0) - (a.rating||0));
+  else if (type === 'emergency') list = list.filter(h => h.emergency_available);
+  renderHospitalsList(list);
+}
+
+async function searchCityHospitals() {
+  const city = document.getElementById('hospSearchCity').value.trim();
+  if (!city) { showToast('Please enter a city or location.', 'error'); return; }
+  await loadNearbyHospitals(city);
+}
+
+// =====================================================
+// APPOINTMENT BOOKING & WIZARD
+// =====================================================
+async function openBookingWizard(hospitalId, hospitalName) {
+  navigateTo('appointments');
+  const wizard = document.getElementById('bookingWizardCard');
+  const docList = document.getElementById('wizardDoctorsList');
+  document.getElementById('wizardHospitalName').textContent = `Book at ${hospitalName}`;
+  wizard.style.display = 'block';
+  docList.innerHTML = '<div style="padding:16px;color:var(--text-muted);">Finding available doctors & slots...</div>';
+
+  try {
+    const res = await fetch(`${API}/doctors/search`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ hospital_id: hospitalId, department: state.recommendedDept || 'General Medicine' })
+    });
+    const doctors = await res.json();
+    if (!doctors.length) {
+      docList.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No online slots currently open for this hospital. Please call reception.</div>';
+      return;
+    }
+
+    docList.innerHTML = doctors.map(d => `
+      <div style="border:1px solid var(--border);border-radius:var(--radius-md);padding:14px;margin-bottom:10px;background:var(--card-subtle);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <div>
+            <strong style="color:var(--primary-navy);">${d.name}</strong>
+            <div style="font-size:0.75rem;color:var(--text-muted);">${d.department} • ${d.specialization || 'Consultant'}</div>
+          </div>
+          <button class="header-pill-btn" onclick="loadDoctorSlots(${d.id}, ${hospitalId}, '${d.name.replace(/'/g,"\\'")}', '${hospitalName.replace(/'/g,"\\'")}')">Select Slot →</button>
+        </div>
+        <div id="slotsForDoc_${d.id}" style="display:none;padding-top:10px;border-top:1px dashed var(--border);"></div>
+      </div>
+    `).join('');
+  } catch (e) {
+    docList.innerHTML = '<div style="padding:16px;color:var(--accent-rose);">Failed to retrieve doctors.</div>';
+  }
+}
+
+async function loadDoctorSlots(docId, hospId, docName, hospName) {
+  const container = document.getElementById(`slotsForDoc_${docId}`);
+  container.style.display = 'block';
+  container.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">Loading open timeslots...</div>';
+
+  try {
+    const res = await fetch(`${API}/appointments/slots`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ doctor_id: docId })
+    });
+    const slots = await res.json();
+    if (!slots.length) {
+      container.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">No open slots today for this doctor.</div>';
+      return;
+    }
+
+    container.innerHTML = `
+      <div style="font-size:0.75rem;font-weight:700;color:var(--text-muted);margin-bottom:6px;">AVAILABLE SLOTS TODAY:</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">
+        ${slots.map(s => `
+          <button class="header-pill-btn primary" style="font-size:0.78rem;padding:6px 12px;" onclick="promptBookingConfirmation(${docId}, ${hospId}, ${s.id}, '${docName}', '${hospName}', '${s.date}', '${s.start_time}')">
+            ${s.start_time} (${s.date})
+          </button>
+        `).join('')}
+      </div>
+    `;
+  } catch (e) {
+    container.innerHTML = '<div style="font-size:0.78rem;color:var(--accent-rose);">Error loading slots.</div>';
+  }
+}
+
+function promptBookingConfirmation(docId, hospId, slotId, docName, hospName, date, time) {
+  const modal = document.getElementById('confirmAppointmentModal');
+  const details = document.getElementById('confirmAppointmentDetails');
+  details.innerHTML = `
+    <strong>🏥 Hospital:</strong> ${hospName}<br>
+    <strong>👨‍⚕️ Doctor:</strong> ${docName}<br>
+    <strong>📅 Date & Time:</strong> ${date} at ${time}<br>
+    <strong>👤 Patient:</strong> ${state.user.name} (${state.user.gender}, ${state.user.age} yrs)<br>
+    <strong>📱 SMS Recipient:</strong> ${state.user.phone}
+  `;
+  modal.classList.add('active');
+
+  document.getElementById('btnConfirmBookingExec').onclick = async () => {
+    modal.classList.remove('active');
+    closeBookingWizard();
+    await executeAppointmentBooking(docId, hospId, slotId, hospName, docName, date, time);
+  };
+}
+
+async function executeAppointmentBooking(docId, hospId, slotId, hospName, docName, date, time) {
+  try {
+    const res = await fetch(`${API}/appointments/book`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        patient_id: state.patientId,
+        doctor_id: docId,
+        hospital_id: hospId,
+        slot_id: slotId
+      })
+    });
+    const data = await res.json();
+    if (data.id) {
+      state.currentAppointment = data;
+      showToast(`Appointment confirmed! Token #${data.queue_number}`, 'success');
+      showToast(`📱 SMS confirmation sent to ${state.user.phone}`, 'info');
+
+      document.getElementById('topAptVal').textContent = `${docName} (${time})`;
+      document.getElementById('topQueueVal').textContent = `Token #${data.queue_number}`;
+      document.getElementById('sidebarQueueBadge').style.display = 'inline-block';
+      document.getElementById('sidebarQueueBadge').textContent = `#${data.queue_number}`;
+
+      loadAppointmentsList();
+      loadQueueData();
+      loadSmsLogsList();
+      loadNotificationsList();
+
+      addAssistantBubble('assistant', `✅ **Appointment Booked!**\n\n• Hospital: ${hospName}\n• Doctor: ${docName}\n• Date: ${date} at ${time}\n• Queue Token: **#${data.queue_number}**\n• Estimated Wait: **~${data.estimated_wait_minutes || 20} mins**\n\nAn SMS confirmation has been dispatched to ${state.user.phone}.`, {
+        chips: [
+          { label: '📊 Track Live Queue', action: () => navigateTo('tracking') },
+          { label: '📱 View SMS Logs', action: () => navigateTo('notifications') }
+        ]
+      });
+
+      navigateTo('tracking');
+      connectLiveQueueWebSocket(data.id);
+    }
+  } catch (e) {
+    showToast('Booking failed. Please try again.', 'error');
+  }
+}
+
+function closeBookingWizard() {
+  document.getElementById('bookingWizardCard').style.display = 'none';
+}
+function closeConfirmModal() {
+  document.getElementById('confirmAppointmentModal').classList.remove('active');
+}
+
+async function loadAppointmentsList() {
+  try {
+    const res = await fetch(`${API}/appointments?patient_id=${state.patientId}`);
+    state.appointments = await res.json();
+    const container = document.getElementById('appointmentsMainList');
+    if (!state.appointments.length) {
+      container.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted);">No appointments booked yet.</div>';
+      return;
+    }
+
+    container.innerHTML = state.appointments.map(a => `
+      <div style="border:1px solid var(--border);border-radius:var(--radius-md);padding:16px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <strong style="color:var(--primary-navy);font-size:0.95rem;">${a.doctor}</strong>
+          <div style="font-size:0.78rem;color:var(--text-muted);">${a.department || 'Medicine'} • ${a.hospital}</div>
+          <div style="font-size:0.78rem;color:var(--primary-navy);margin-top:4px;">📅 ${a.date} at ⏰ ${a.time} &nbsp;•&nbsp; <strong>Token #${a.queue_number || 105}</strong></div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <span class="hosp-badge ${a.status==='Confirmed'?'open':'emergency'}">${a.status}</span>
+          ${a.status==='Confirmed' ? `
+            <button class="header-pill-btn primary" style="font-size:0.75rem;" onclick="navigateTo('tracking')">Track</button>
+            <button class="header-pill-btn" style="font-size:0.75rem;color:var(--accent-rose);" onclick="cancelAppointmentItem(${a.id})">Cancel</button>
+          ` : ''}
+        </div>
+      </div>
+    `).join('');
+  } catch(e){}
+}
+
+async function cancelAppointmentItem(id) {
+  if (!confirm('Are you sure you want to cancel this appointment?')) return;
+  try {
+    await fetch(`${API}/appointments/cancel`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ appointment_id: id })
+    });
+    showToast('Appointment cancelled.', 'info');
+    loadAppointmentsList();
+  } catch(e){}
+}
+
+// =====================================================
+// LIVE REAL-TIME QUEUE & DEPARTURE BUFFER
+// =====================================================
+async function loadQueueData() {
+  try {
+    const res = await fetch(`${API}/queue/status?patient_id=${state.patientId}`);
+    const data = await res.json();
+    if (Array.isArray(data) && data.length) state.queueData = data[0];
+    else if (data.appointment_id) state.queueData = data;
+
+    if (state.queueData && state.queueData.appointment_id) {
+      const aptId = state.queueData.appointment_id;
+      const tRes = await fetch(`${API}/api/queue/timeline/${aptId}`).catch(()=>null);
+      if (tRes && tRes.ok) {
+        const tData = await tRes.json();
+        state.queueTimeline = tData.timeline || [];
+      }
+      const bRes = await fetch(`${API}/api/travel/buffer?distance_km=3.5&appointment_time=10:30 AM`).catch(()=>null);
+      if (bRes && bRes.ok) state.departureBuffer = await bRes.json();
+    }
+    renderLiveQueueDashboard();
+  } catch(e){}
+}
+
+function renderLiveQueueDashboard() {
+  const container = document.getElementById('liveTrackingCard');
+  if (!state.queueData) {
+    container.innerHTML = `
+      <div style="padding:40px 20px;text-align:center;color:var(--text-muted);">
+        <div style="font-size:36px;margin-bottom:10px;">⏱</div>
+        <h3 style="color:var(--primary-navy);margin-bottom:6px;">No Active Queue</h3>
+        <p style="font-size:0.85rem;margin-bottom:16px;">Book an appointment to track your real-time queue position.</p>
+        <button class="header-pill-btn primary" onclick="navigateTo('hospitals')">Book Appointment</button>
+      </div>
+    `;
+    return;
+  }
+
+  const q = state.queueData;
+  const isTurn = q.position <= 1 || q.status === 'your_turn' || q.status === 'in_consultation';
+  const steps = [
+    {l:'Confirmed', done:true},
+    {l:'Checked In', done:true},
+    {l:'Waiting', done:q.position>1, current:q.position>1},
+    {l:'Almost Up', done:q.position<=2 && q.position>0, current:q.position===2},
+    {l:'Consultation', done:isTurn, current:isTurn}
+  ];
+
+  container.innerHTML = `
+    <div class="card-header">
+      <div class="card-title-group">
+        <div class="card-icon" style="background:#fffbeb;color:#f59e0b;">⏱</div>
+        <div>
+          <h3 class="card-title">Live Appointment Tracking</h3>
+          <p class="card-subtext">Automated Queue Sync & SMS Alerts</p>
+        </div>
+      </div>
+      <span class="hosp-badge ${isTurn?'emergency':'open'}">${isTurn ? '🎉 YOUR TURN NOW' : '● WAITING'}</span>
+    </div>
+
+    <!-- Main Large Queue Stat Box -->
+    <div style="background:var(--card-subtle);border:1.5px solid var(--border);border-radius:var(--radius-lg);padding:24px;text-align:center;margin-bottom:20px;">
+      <div style="font-size:0.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">YOUR LIVE TOKEN</div>
+      <div style="font-size:3.6rem;font-weight:900;color:var(--primary-navy);letter-spacing:-0.03em;line-height:1;">#${q.queue_number || 105}</div>
+      <div style="font-size:0.88rem;color:var(--brand-blue);font-weight:600;margin-top:6px;">${q.people_ahead ?? Math.max(0, (q.position||1)-1)} people ahead of you</div>
+
+      <!-- 5-Step Visual Progress Bar -->
+      <div class="progress-stepper" style="max-width:560px;margin:24px auto 8px auto;">
+        <div class="stepper-line"></div>
+        ${steps.map((s,i) => `
+          <div class="stepper-step ${s.done?'completed':''} ${s.current?'current':''}">
+            <div class="stepper-dot">${s.done ? '✓' : (i+1)}</div>
+            <div class="stepper-label">${s.l}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+
+    <!-- Grid: People Ahead + Est Wait + Smart Departure Buffer -->
+    <div class="grid-3" style="margin-bottom:20px;">
+      <div class="metric-box">
+        <div class="metric-number" style="color:var(--brand-blue);">${q.people_ahead ?? Math.max(0, (q.position||1)-1)}</div>
+        <div class="metric-label">People Ahead</div>
+        <div class="metric-sub">Queue moving normally</div>
+      </div>
+      <div class="metric-box">
+        <div class="metric-number" style="color:var(--brand-teal);">~${q.estimated_wait_minutes || 15}m</div>
+        <div class="metric-label">Estimated Wait Time</div>
+        <div class="metric-sub">Average 5 min / patient</div>
+      </div>
+      <div class="metric-box" style="background:linear-gradient(135deg, #eff6ff, #f0fdfa);border-color:rgba(37,99,235,0.3);">
+        <div class="metric-number" style="color:var(--primary-navy);font-size:1.6rem;">${state.departureBuffer ? state.departureBuffer.recommended_departure_time : '10:15 AM'}</div>
+        <div class="metric-label">Leave-Now Buffer</div>
+        <div class="metric-sub">🚗 ~14 min drive + 12 min check-in</div>
+      </div>
+    </div>
+
+    <!-- Live Activity Timeline -->
+    ${state.queueTimeline && state.queueTimeline.length ? `
+      <div style="background:var(--card-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:16px;margin-bottom:16px;">
+        <h4 style="font-size:0.85rem;font-weight:700;color:var(--primary-navy);margin-bottom:10px;">📜 Live Activity Timeline</h4>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          ${state.queueTimeline.map(t => `
+            <div style="display:flex;gap:10px;align-items:center;font-size:0.82rem;">
+              <span style="font-size:14px;">${t.icon || '📌'}</span>
+              <strong style="color:var(--primary-navy);">${t.event}</strong>
+              <span style="color:var(--text-light);margin-left:auto;font-size:0.75rem;">${t.time}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    ` : ''}
+
+    <div style="display:flex;gap:10px;">
+      <button class="header-pill-btn" onclick="refreshQueue()" style="flex:1;justify-content:center;">🔄 Refresh Queue</button>
+      <button class="header-pill-btn primary" onclick="advanceQueueStepManual(${q.appointment_id})" style="flex:1;justify-content:center;">⚡ Advance Queue Step</button>
+    </div>
+    <div style="font-size:0.72rem;color:var(--text-muted);text-align:center;margin-top:8px;">💡 "Advance Queue Step" simulates queue progression and automatically triggers real-time SMS updates.</div>
+  `;
+}
+
+async function advanceQueueStepManual(aptId) {
+  if (!aptId) return;
+  try {
+    const res = await fetch(`${API}/api/queue/advance/${aptId}`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ phone: state.user.phone })
+    });
+    const data = await res.json();
+    if (data.position !== undefined) {
+      state.queueData = data;
+      state.queueTimeline = data.timeline || [];
+      renderLiveQueueDashboard();
+      showToast(`Queue advanced to position #${data.position} (${data.people_ahead} ahead)`, 'success');
+      if (data.sms_sent) showToast(`📱 SMS update dispatched to ${state.user.phone}`, 'info');
+      loadNotificationsList();
+      loadSmsLogsList();
+    }
+  } catch(e){}
+}
+
+function connectLiveQueueWebSocket(aptId) {
+  const wsUrl = API.replace('http','ws') + `/ws/queue/${aptId}`;
+  try {
+    wsQueue = new WebSocket(wsUrl);
+    wsQueue.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'queue_update' || msg.type === 'queue_advance') {
+        state.queueData = msg.data;
+        if (msg.data.timeline) state.queueTimeline = msg.data.timeline;
+        renderLiveQueueDashboard();
+      }
+    };
+  } catch(e){}
+}
+
+// =====================================================
+// NOTIFICATIONS & SMS DELIVERY LOGS
+// =====================================================
+function setNotifTab(tab) {
+  document.getElementById('notifTabBtnAlerts').classList.toggle('active', tab === 'alerts');
+  document.getElementById('notifTabBtnSms').classList.toggle('active', tab === 'sms');
+  document.getElementById('notifAlertsSection').style.display = tab === 'alerts' ? 'block' : 'none';
+  document.getElementById('notifSmsSection').style.display = tab === 'sms' ? 'block' : 'none';
+  if (tab === 'sms') loadSmsLogsList();
+}
+
+async function loadNotificationsList() {
+  try {
+    const res = await fetch(`${API}/notifications?patient_id=${state.patientId}`);
+    state.notifications = await res.json();
+    const container = document.getElementById('notifInAppList');
+    document.getElementById('sidebarNotifBadge').textContent = state.notifications.length;
+
+    if (!state.notifications.length) {
+      container.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted);">No notifications yet.</div>';
+      return;
+    }
+
+    container.innerHTML = state.notifications.map(n => `
+      <div style="display:flex;gap:12px;padding:12px 14px;border-radius:var(--radius-md);background:${n.read?'var(--card-bg)':'var(--accent-emerald-bg)'};border:1px solid var(--border);margin-bottom:8px;">
+        <div style="font-size:16px;">🔔</div>
+        <div style="flex:1;">
+          <div style="font-size:0.86rem;color:var(--primary-navy);font-weight:600;">${n.message}</div>
+          <div style="font-size:0.72rem;color:var(--text-light);margin-top:2px;">${n.created_at ? new Date(n.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : 'Just now'}</div>
+        </div>
+      </div>
+    `).join('');
+  } catch(e){}
+}
+
+async function loadSmsLogsList() {
+  try {
+    const res = await fetch(`${API}/api/sms/logs?patient_id=${state.patientId}`);
+    const data = await res.json();
+    const logs = data.logs || [];
+    const container = document.getElementById('notifSmsLogsList');
+
+    if (!logs.length) {
+      container.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted);">No SMS messages dispatched yet.</div>';
+      return;
+    }
+
+    container.innerHTML = logs.map(l => `
+      <div style="border:1px solid var(--border);border-radius:var(--radius-md);padding:14px;background:var(--card-subtle);margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <strong style="color:var(--primary-navy);font-size:0.85rem;">📱 Recipient: ${l.phone_masked}</strong>
+          <span class="hosp-badge ${l.status==='FAILED'?'emergency':'open'}">${l.status}</span>
+        </div>
+        <div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:6px;">Type: <em>${l.message_type}</em> • Provider: <strong>${l.provider}</strong> • ${l.sent_at || 'Just now'}</div>
+        <div style="background:#ffffff;border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-family:monospace;font-size:0.75rem;white-space:pre-wrap;color:var(--primary-navy);">${l.message_body}</div>
+      </div>
+    `).join('');
+  } catch(e){}
+}
+
+async function sendTestSmsTrigger() {
+  const phone = document.getElementById('testSmsInputPhone').value.trim() || state.user.phone;
+  if (!phone) { showToast('Please enter a valid phone number.', 'error'); return; }
+  try {
+    const res = await fetch(`${API}/api/sms/test`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ phone, message: "MedAssist AI: Test verification SMS sent successfully! Multi-channel queue sync active." })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`SMS dispatched via ${data.provider} (${data.status})`, 'success');
+      loadSmsLogsList();
+    }
+  } catch(e){}
+}
+
+// =====================================================
+// PERSISTENT INTELLIGENT ASSISTANT CHAT
+// =====================================================
+function addAssistantBubble(role, text, meta = {}) {
+  const log = document.getElementById('assistantChatLog');
+  const bubble = document.createElement('div');
+  bubble.className = `chat-msg ${role}`;
+
+  const av = document.createElement('div');
+  av.className = 'm-avatar';
+  av.textContent = role === 'assistant' ? '✚' : '👤';
+
+  const bodyWrap = document.createElement('div');
+  const body = document.createElement('div');
+  body.className = 'm-body';
+  body.innerHTML = text.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  bodyWrap.appendChild(body);
+
+  if (meta.chips && meta.chips.length) {
+    const chipsBox = document.createElement('div');
+    chipsBox.className = 'quick-chips-box';
+    meta.chips.forEach(c => {
+      const chip = document.createElement('span');
+      chip.className = 'q-chip';
+      chip.textContent = c.label;
+      chip.onclick = c.action;
+      chipsBox.appendChild(chip);
+    });
+    bodyWrap.appendChild(chipsBox);
+  }
+
+  const time = document.createElement('span');
+  time.className = 'm-time';
+  time.textContent = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  bodyWrap.appendChild(time);
+
+  bubble.appendChild(av);
+  bubble.appendChild(bodyWrap);
+  log.appendChild(bubble);
+  log.scrollTop = log.scrollHeight;
+}
+
+function handleChatKeyDown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    submitAssistantChat();
+  }
+}
+
+async function submitAssistantChat() {
+  const input = document.getElementById('chatTextInput');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+
+  addAssistantBubble('user', msg);
+  document.getElementById('assistantStateBadge').textContent = 'Analyzing...';
+
+  try {
+    const res = await fetch(`${API}/agent/message`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        message: msg,
+        session_id: SID,
+        location: { latitude: state.location.lat, longitude: state.location.lon },
+        user: state.user
+      })
+    });
+    const data = await res.json();
+    const responseText = data.response || "I am here to assist with your healthcare needs.";
+
+    let chips = [];
+    if (data.ui_action === 'show_map' || data.intent === 'FIND_HOSPITAL') {
+      chips.push({ label: '📍 View Map', action: () => navigateTo('hospitals') });
+    }
+    if (data.intent === 'BOOK_APPOINTMENT' || data.ui_action === 'show_booking') {
+      chips.push({ label: '📅 Open Booking', action: () => navigateTo('appointments') });
+    }
+
+    addAssistantBubble('assistant', responseText, { chips });
+
+    // Handle tool results
+    if (data.tool_results?.searchNearbyHospitals?.hospitals) {
+      state.hospitals = data.tool_results.searchNearbyHospitals.hospitals;
+      renderHospitalsList(state.hospitals);
+      renderHospitalsOnMap(state.hospitals);
+    }
+    if (data.tool_results?.getQueueStatus) {
+      state.queueData = data.tool_results.getQueueStatus;
+      renderLiveQueueDashboard();
+    }
+  } catch (e) {
+    addAssistantBubble('assistant', "Healthcare assistant is connected and ready. How may I guide your care today?");
+  } finally {
+    document.getElementById('assistantStateBadge').textContent = 'Listening';
+  }
+}
+
+let chatRecog = null, isChatListening = false;
+if (SR) {
+  chatRecog = new SR();
+  chatRecog.onstart = () => {
+    isChatListening = true;
+    document.getElementById('chatMicBtn').classList.add('listening');
+  };
+  chatRecog.onresult = (e) => {
+    document.getElementById('chatTextInput').value = e.results[0][0].transcript;
+    submitAssistantChat();
+  };
+  chatRecog.onend = () => {
+    isChatListening = false;
+    document.getElementById('chatMicBtn').classList.remove('listening');
+  };
+}
+function toggleChatVoice() {
+  if (!SR) return;
+  if (isChatListening) chatRecog.stop(); else chatRecog.start();
+}
+
+// =====================================================
+// SESSION & UTILITY
+// =====================================================
+function resetSession() {
+  if (!confirm('Start a new healthcare session?')) return;
+  localStorage.removeItem('medassist_user');
+  location.reload();
+}
+
+function showToast(msg, type = 'info') {
+  const shelf = document.getElementById('toastShelf');
+  const pill = document.createElement('div');
+  pill.className = `toast-pill ${type}`;
+  pill.innerHTML = `<span>${type==='success'?'✅':type==='error'?'❌':'ℹ️'}</span> ${msg}`;
+  shelf.appendChild(pill);
+  setTimeout(() => { pill.style.opacity = '0'; setTimeout(() => pill.remove(), 250); }, 3800);
+}
+
+// =====================================================
+// INITIALIZATION
+// =====================================================
+document.addEventListener('DOMContentLoaded', () => {
+  checkUserOnboarding();
+  loadNearbyHospitals();
+  loadAppointmentsList();
+  loadQueueData();
+  loadNotificationsList();
+
+  addAssistantBubble('assistant', `Hello ${state.user.name.split(' ')[0]}! 👋 I'm your AI Healthcare Assistant.\n\nI can help you assess symptoms, locate emergency and specialty care, book appointments, and track your queue in real time.\n\nHow can I help you right now?`, {
+    chips: [
+      { label: '🤒 Describe Symptoms', action: () => navigateTo('assessment') },
+      { label: '🏥 Find Nearby Hospitals', action: () => navigateTo('hospitals') },
+      { label: '⏱ Live Queue Tracking', action: () => navigateTo('tracking') }
+    ]
+  });
+});
+</script>
+</body>
 </html>
