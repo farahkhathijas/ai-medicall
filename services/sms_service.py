@@ -21,7 +21,7 @@ def mask_phone(phone: Optional[str]) -> str:
 
 class SMSService:
     def __init__(self):
-        self.provider = os.getenv("SMS_PROVIDER", "simulation").lower().strip()
+        self.provider = os.getenv("SMS_PROVIDER", "").lower().strip()
         # Twilio Config
         self.twilio_sid = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
         self.twilio_token = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
@@ -30,15 +30,29 @@ class SMSService:
         # MSG91 Config
         self.msg91_auth_key = os.getenv("MSG91_AUTH_KEY", "").strip()
         self.msg91_sender_id = os.getenv("MSG91_SENDER_ID", "MEDAST").strip()
+
+        # Fast2SMS Config
+        self.fast2sms_key = os.getenv("FAST2SMS_API_KEY", "").strip()
         
         # Determine effective mode
         self.is_real = False
-        if self.provider == "twilio" and self.twilio_sid and self.twilio_token and not self.twilio_sid.startswith("your_"):
+        if self.twilio_sid and self.twilio_token and not self.twilio_sid.startswith("your_") and not self.twilio_sid.startswith("placeholder"):
             self.is_real = True
-        elif self.provider == "msg91" and self.msg91_auth_key and not self.msg91_auth_key.startswith("your_"):
+            self.provider = "twilio"
+        elif self.msg91_auth_key and not self.msg91_auth_key.startswith("your_") and not self.msg91_auth_key.startswith("placeholder"):
             self.is_real = True
+            self.provider = "msg91"
+        elif self.fast2sms_key and not self.fast2sms_key.startswith("your_") and not self.fast2sms_key.startswith("placeholder"):
+            self.is_real = True
+            self.provider = "fast2sms"
+        elif self.provider == "simulation" or self.provider == "demo":
+            self.is_real = False
+            self.provider = "simulation"
+        else:
+            self.is_real = False
+            self.provider = "none"
             
-        print(f"SMS Service initialized in {'REAL' if self.is_real else 'SIMULATION/DEMO'} mode (Provider: {self.provider})")
+        print(f"SMS Service initialized: mode={'REAL' if self.is_real else 'UNCONFIGURED/DEMO'}, provider={self.provider}")
 
     def _log_sms_to_db(self, phone: str, message: str, message_type: str, status: str, provider: str, 
                        patient_id: Optional[int] = None, appointment_id: Optional[int] = None, 
@@ -69,13 +83,19 @@ class SMSService:
             return None
 
     def send_sms(self, to_phone: str, message: str, message_type: str = "general", 
-                 patient_id: Optional[int] = None, appointment_id: Optional[int] = None) -> Dict[str, Any]:
-        """Send SMS via configured provider with fallback and logging"""
+                 patient_id: Optional[int] = None, appointment_id: Optional[int] = None,
+                 demo_mode: bool = False) -> Dict[str, Any]:
+        """Send SMS via configured provider with truthful error reporting and database audit"""
         if not to_phone or len(to_phone.strip()) < 5:
-            return {"success": False, "error": "Invalid phone number", "status": "FAILED"}
+            return {
+                "success": False, 
+                "error": "Invalid phone number provided", 
+                "status": "FAILED",
+                "provider": self.provider
+            }
 
         to_phone = to_phone.strip()
-        status = "SENT"
+        status = "FAILED"
         provider_resp_id = None
         error_msg = None
 
@@ -94,10 +114,10 @@ class SMSService:
                     status = "DELIVERED" if res_data.get("status") in ["delivered", "sent", "queued"] else "SENT"
                 else:
                     status = "FAILED"
-                    error_msg = res_data.get("message", "Twilio delivery error")
+                    error_msg = res_data.get("message", f"Twilio HTTP error {resp.status_code}")
             except Exception as e:
                 status = "FAILED"
-                error_msg = str(e)
+                error_msg = f"Twilio connection error: {str(e)}"
 
         elif self.is_real and self.provider == "msg91":
             try:
@@ -111,18 +131,50 @@ class SMSService:
                 resp = requests.post(url, json=payload, headers=headers, timeout=10)
                 res_data = resp.json()
                 if resp.status_code == 200 and res_data.get("type") == "success":
-                    provider_resp_id = res_data.get("message")
+                    provider_resp_id = str(res_data.get("message"))
                     status = "SENT"
                 else:
                     status = "FAILED"
-                    error_msg = res_data.get("message", "MSG91 delivery error")
+                    error_msg = res_data.get("message", f"MSG91 error {resp.status_code}")
             except Exception as e:
                 status = "FAILED"
-                error_msg = str(e)
-        else:
-            # Simulation / Demo Mode
+                error_msg = f"MSG91 connection error: {str(e)}"
+
+        elif self.is_real and self.provider == "fast2sms":
+            try:
+                url = "https://www.fast2sms.com/dev/bulkV2"
+                clean_phone = re.sub(r'[^0-9]', '', to_phone)[-10:]
+                payload = {
+                    "authorization": self.fast2sms_key,
+                    "route": "q",
+                    "message": message,
+                    "language": "english",
+                    "flash": 0,
+                    "numbers": clean_phone
+                }
+                resp = requests.post(url, data=payload, timeout=10)
+                res_data = resp.json()
+                if resp.status_code == 200 and res_data.get("return") is True:
+                    provider_resp_id = res_data.get("request_id")
+                    status = "SENT"
+                else:
+                    status = "FAILED"
+                    error_msg = res_data.get("message", f"Fast2SMS error {resp.status_code}")
+            except Exception as e:
+                status = "FAILED"
+                error_msg = f"Fast2SMS connection error: {str(e)}"
+
+        elif demo_mode or self.provider == "simulation":
+            # Explicit Demo Mode Only
             status = "SIMULATED"
             provider_resp_id = f"sim_{int(datetime.datetime.now().timestamp() * 1000)}"
+            error_msg = "Demo mode simulation (No live network SMS dispatched)"
+
+        else:
+            # Unconfigured credentials: Truthful reporting
+            status = "NOT_CONFIGURED"
+            error_msg = "SMS credentials not configured in .env. Configure TWILIO_ACCOUNT_SID, MSG91_AUTH_KEY, or FAST2SMS_API_KEY."
+            provider_resp_id = None
 
         # Log to Database
         log_id = self._log_sms_to_db(
@@ -130,7 +182,7 @@ class SMSService:
             message=message,
             message_type=message_type,
             status=status,
-            provider=self.provider if self.is_real else "simulation",
+            provider=self.provider if self.is_real else ("simulation" if (demo_mode or self.provider=="simulation") else "none"),
             patient_id=patient_id,
             appointment_id=appointment_id,
             provider_response_id=provider_resp_id,
@@ -140,8 +192,8 @@ class SMSService:
         return {
             "success": status in ["SENT", "DELIVERED", "SIMULATED"],
             "status": status,
-            "provider": self.provider if self.is_real else "simulation",
-            "message_id": provider_resp_id or f"log_{log_id}",
+            "provider": self.provider if self.is_real else ("simulation" if (demo_mode or self.provider=="simulation") else "none"),
+            "message_id": provider_resp_id or (f"log_{log_id}" if log_id else None),
             "recipient_masked": mask_phone(to_phone),
             "log_id": log_id,
             "error": error_msg

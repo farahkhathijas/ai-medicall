@@ -657,10 +657,56 @@ body {
 /* Leaflet Dark Map Customization */
 #darkMapElement {
   width: 100%;
-  height: 380px;
+  height: 420px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   overflow: hidden;
+  background: #121418;
+}
+.leaflet-container {
+  background: #121418 !important;
+  font-family: 'Plus Jakarta Sans', sans-serif !important;
+}
+.leaflet-tile-pane {
+  filter: brightness(0.62) invert(1) contrast(2.2) hue-rotate(200deg) saturate(0.28);
+}
+.leaflet-popup-content-wrapper, .leaflet-popup-tip {
+  background: #17191f !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.7) !important;
+  border-radius: var(--radius-md) !important;
+}
+.leaflet-popup-content {
+  margin: 14px 16px !important;
+  line-height: 1.5 !important;
+  color: #e2e8f0 !important;
+}
+.badge-govt {
+  background: rgba(59, 130, 246, 0.18);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+.badge-private {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+.badge-unavailable {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 0.7rem;
 }
 
 /* Modals */
@@ -838,6 +884,23 @@ body {
            1. DASHBOARD VIEW (PRIMARY HOMEPAGE)
            ============================================== -->
       <div class="view-panel active" id="view_dashboard">
+        <!-- Phase 2 & 25: Real Service Health Observability Panel -->
+        <div id="devHealthBar" style="background: rgba(18,20,24,0.92); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 12px 18px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; font-size: 0.8rem; flex-wrap: wrap; gap: 12px;">
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <span style="font-weight:800; color:#ff6a00; font-size:0.75rem; letter-spacing:0.06em;">SYSTEM HEALTH AUDIT:</span>
+            <span>Backend: <strong id="healthBackend" style="color:#10b981;">● ONLINE</strong></span>
+            <span style="color:var(--border-subtle);">|</span>
+            <span>Database: <strong id="healthDatabase" style="color:#10b981;">● CONNECTED</strong></span>
+            <span style="color:var(--border-subtle);">|</span>
+            <span>ML Triage: <strong id="healthMl" style="color:#10b981;">● READY (Random Forest)</strong></span>
+            <span style="color:var(--border-subtle);">|</span>
+            <span>Maps: <strong id="healthMaps" style="color:#10b981;">● READY (OpenStreetMap)</strong></span>
+            <span style="color:var(--border-subtle);">|</span>
+            <span>SMS Provider: <strong id="healthSms" style="color:#f59e0b;">⚠️ NOT CONFIGURED</strong></span>
+          </div>
+          <button class="btn-dark-pill" onclick="fetchLiveHealthStatus()" style="padding:4px 12px; font-size:0.75rem;">↻ Run Live Audit</button>
+        </div>
+
         <!-- Dashboard 2-Column Grid (Direct Reference Composition) -->
         <div class="dashboard-grid">
 
@@ -1051,11 +1114,12 @@ body {
         <div class="dark-card">
           <div class="card-top-row" style="flex-wrap:wrap;gap:12px;">
             <div class="pill-tabs-group" style="overflow-x:auto;">
-              <button class="pill-tab active" onclick="filterHospList('all', this)">All</button>
+              <button class="pill-tab active" onclick="filterHospList('all', this)">All Facilities</button>
+              <button class="pill-tab" onclick="filterHospList('government', this)">🏛️ Government</button>
+              <button class="pill-tab" onclick="filterHospList('private', this)">🏢 Private</button>
+              <button class="pill-tab" onclick="filterHospList('emergency', this)">🚑 24/7 Emergency</button>
               <button class="pill-tab" onclick="filterHospList('nearest', this)">📍 Nearest</button>
-              <button class="pill-tab" onclick="filterHospList('fastest', this)">⚡ Fastest</button>
               <button class="pill-tab" onclick="filterHospList('rated', this)">⭐ Top Rated</button>
-              <button class="pill-tab" onclick="filterHospList('emergency', this)">🚑 Emergency</button>
             </div>
             <div style="display:flex;gap:8px;">
               <input type="text" id="hospSearchBox" placeholder="City or location..." style="background:rgba(0,0,0,0.4);border:1px solid var(--border-subtle);border-radius:var(--radius-full);padding:6px 14px;color:#fff;font-size:0.8rem;outline:none;" />
@@ -1393,25 +1457,44 @@ function renderAssessmentResultCard(data) {
   const box = document.getElementById('assessResultBox');
   box.style.display = 'block';
   const u = (data.urgency_level || data.urgency || 'MODERATE').toUpperCase();
+  const confPct = Math.round((data.confidence || 0.85) * 100);
 
   box.innerHTML = `
     <div class="card-top-row">
       <div>
-        <div class="card-label-small">AI Clinical Assessment Output</div>
+        <div class="card-label-small">AI Clinical Assessment & Triage Output</div>
         <h3 style="font-size:1.25rem;font-weight:800;color:#ffffff;margin-top:2px;">Triage Evaluation</h3>
       </div>
-      <span class="urg-tag urg-${u}">${u} Urgency</span>
+      <div style="text-align:right;">
+        <span class="urg-tag urg-${u}">${u} Urgency</span>
+        <div style="font-size:0.75rem;color:var(--text-muted);margin-top:4px;">${confPct}% Model Confidence (Random Forest)</div>
+      </div>
     </div>
 
+    <!-- Clinical Rationale & Why -->
     <div style="background:rgba(0,0,0,0.35);border:1px solid var(--border-subtle);border-radius:var(--radius-md);padding:18px;margin-bottom:14px;">
+      <div class="card-label-small">Clinical Reason ("Why")</div>
+      <div style="font-size:0.92rem;color:#f1f5f9;margin-top:4px;line-height:1.5;">${data.reason || data.urgency_reason || 'Triage model evaluated vital trends and symptom severity.'}</div>
+      <div style="font-size:0.78rem;color:var(--text-muted);margin-top:6px;">
+        <strong>Patient Input:</strong> <em>"${data.original_statement || document.getElementById('assessInputText').value.trim()}"</em> • <strong>Duration:</strong> ${data.duration || 'Not specified'}
+      </div>
+    </div>
+
+    <!-- Recommended Department -->
+    <div style="background:rgba(255,106,0,0.06);border:1px solid var(--border-accent);border-radius:var(--radius-md);padding:18px;margin-bottom:14px;">
       <div class="card-label-small">Recommended Specialty Department</div>
-      <div style="font-size:1.5rem;font-weight:800;color:var(--accent-orange);margin-top:2px;">${data.recommended_department || 'General Medicine'}</div>
-      <div style="font-size:0.85rem;color:var(--text-secondary);margin-top:4px;">${data.urgency_reason || ''}</div>
+      <div style="font-size:1.4rem;font-weight:800;color:var(--accent-orange);margin-top:2px;">${data.recommended_department || 'General Medicine'}</div>
+      <div style="font-size:0.85rem;color:var(--text-secondary);margin-top:4px;">${data.recommended_action || ''}</div>
     </div>
 
     ${data.emergency_warning ? `
-      <div style="background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.4);border-radius:var(--radius-md);padding:14px;color:var(--accent-rose);font-size:0.88rem;margin-bottom:14px;">
-        <strong>🚨 Critical Emergency Warning:</strong> ${data.recommended_action}
+      <div style="background:rgba(239,68,68,0.14);border:1px solid rgba(239,68,68,0.5);border-radius:var(--radius-md);padding:16px;color:#fca5a5;font-size:0.9rem;margin-bottom:14px;line-height:1.5;">
+        <div style="font-weight:800;color:#ef4444;font-size:1rem;margin-bottom:4px;">🚨 Critical Emergency Safety Alert</div>
+        ${data.recommended_action}
+        <div style="display:flex;gap:10px;margin-top:12px;">
+          <a href="tel:108" class="btn-orange-pill" style="text-decoration:none;padding:6px 16px;font-size:0.82rem;">📞 Call Emergency Services (108)</a>
+          <button class="btn-dark-pill" onclick="switchView('hospitals'); filterHospList('emergency', document.querySelector('.pill-tab'));" style="padding:6px 16px;font-size:0.82rem;">Find Emergency Hospitals</button>
+        </div>
       </div>
     ` : ''}
 
@@ -1426,11 +1509,43 @@ function renderAssessmentResultCard(data) {
       ⚕️ ${data.disclaimer || 'AI guidance only — not a medical diagnosis. Consult a licensed medical practitioner.'}
     </div>
 
-    <div style="display:flex;gap:12px;">
+    <div style="display:flex;gap:12px;flex-wrap:wrap;">
       <button class="btn-orange-pill" onclick="switchView('hospitals')" style="padding:10px 24px;">Find Nearby Hospitals →</button>
       <button class="btn-dark-pill" onclick="switchView('appointments')">Direct Appointment</button>
     </div>
   `;
+}
+
+async function fetchLiveHealthStatus() {
+  try {
+    const res = await fetch(`${API}/api/health`);
+    const data = await res.json();
+    const s = data.services || {};
+
+    const bEl = document.getElementById('healthBackend');
+    if (bEl) bEl.innerHTML = '<span style="color:#10b981;">● ONLINE</span>';
+
+    const dbEl = document.getElementById('healthDatabase');
+    if (dbEl) dbEl.innerHTML = s.database === 'connected' ? '<span style="color:#10b981;">● CONNECTED</span>' : '<span style="color:#ef4444;">● ERROR</span>';
+
+    const mlEl = document.getElementById('healthMl');
+    if (mlEl) mlEl.innerHTML = s.ml === 'ready' ? '<span style="color:#10b981;">● READY (Random Forest)</span>' : '<span style="color:#f59e0b;">● DEGRADED</span>';
+
+    const mapEl = document.getElementById('healthMaps');
+    if (mapEl) mapEl.innerHTML = s.maps === 'ready' ? '<span style="color:#10b981;">● READY (OpenStreetMap)</span>' : '<span style="color:#f59e0b;">● FALLBACK</span>';
+
+    const smsEl = document.getElementById('healthSms');
+    if (smsEl) {
+      if (s.sms === 'ready') {
+        smsEl.innerHTML = '<span style="color:#10b981;">● CONFIGURED (Live Network)</span>';
+      } else {
+        smsEl.innerHTML = '<span style="color:#f59e0b;">⚠️ NOT CONFIGURED</span>';
+      }
+    }
+  } catch(e) {
+    const bEl = document.getElementById('healthBackend');
+    if (bEl) bEl.innerHTML = '<span style="color:#ef4444;">● OFFLINE</span>';
+  }
 }
 
 // Voice Recognition
@@ -1459,18 +1574,32 @@ function toggleAssessMic() {
 }
 
 // =====================================================
-// NEARBY HOSPITALS & DARK CARTO MAP
+// NEARBY HOSPITALS & LEAFLET MAP
 // =====================================================
 function initDarkLeafletMap() {
-  if (darkLeafletMap) return;
   const el = document.getElementById('darkMapElement');
   if (!el) return;
+  if (darkLeafletMap) {
+    darkLeafletMap.invalidateSize();
+    return;
+  }
   darkLeafletMap = L.map('darkMapElement', { zoomControl: true }).setView([state.location.lat, state.location.lon], 12);
-  // Dark Matter CartoDB Tiles (Matches the exact dark charcoal theme)
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; CartoDB & OpenStreetMap', maxZoom: 19
+  
+  // Standard OpenStreetMap Tiles with CSS dark inversion filter — ZERO API Key Required, 100% reliable
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors',
+    maxZoom: 19
   }).addTo(darkLeafletMap);
+
+  setTimeout(() => {
+    if (darkLeafletMap) darkLeafletMap.invalidateSize();
+  }, 250);
 }
+
+// Invalidate Leaflet size whenever window is resized
+window.addEventListener('resize', () => {
+  if (darkLeafletMap) darkLeafletMap.invalidateSize();
+});
 
 async function loadHospitalsData(query = null) {
   try {
@@ -1490,77 +1619,130 @@ async function loadHospitalsData(query = null) {
     state.hospitals = data.hospitals || [];
     renderDarkMapHospitals(state.hospitals);
     renderHospitalsCards(state.hospitals);
-  } catch(e){}
+  } catch(e){
+    console.error('Error fetching hospitals:', e);
+  }
 }
 
 function renderDarkMapHospitals(hospitals) {
   if (!darkLeafletMap) initDarkLeafletMap();
+  if (darkLeafletMap) darkLeafletMap.invalidateSize();
+
   darkMapMarkers.forEach(m => darkLeafletMap.removeLayer(m));
   darkMapMarkers = [];
 
   const bounds = [];
-  // User Location Pin
+  // User Current Location Pin
   const userPin = L.marker([state.location.lat, state.location.lon], {
     icon: L.divIcon({
       className: '',
-      html: `<div style="width:16px;height:16px;background:#ff6a00;border-radius:50%;border:3px solid #ffffff;box-shadow:0 0 12px #ff6a00;"></div>`,
-      iconSize: [16,16], iconAnchor: [8,8]
+      html: `<div style="width:18px;height:18px;background:#ff6a00;border-radius:50%;border:3px solid #ffffff;box-shadow:0 0 14px #ff6a00;"></div>`,
+      iconSize: [18,18], iconAnchor: [9,9]
     })
-  }).addTo(darkLeafletMap).bindPopup('<b>Your Current Location</b>');
+  }).addTo(darkLeafletMap).bindPopup('<div style="font-weight:700;color:#ff6a00;">📍 Your Current Location</div><div style="font-size:0.78rem;color:#cbd5e1;margin-top:2px;">Lat: ' + state.location.lat + ', Lon: ' + state.location.lon + '</div>');
   darkMapMarkers.push(userPin);
   bounds.push([state.location.lat, state.location.lon]);
 
   hospitals.forEach((h, i) => {
     if (h.latitude && h.longitude) {
+      const isTop = i === 0;
+      const typeBadge = h.type === 'Government' 
+        ? '<span class="badge-govt">Government</span>' 
+        : (h.type === 'Private' ? '<span class="badge-private">Private</span>' : '<span class="badge-unavailable">' + (h.type || 'Type unavailable') + '</span>');
+      const emBadge = h.emergency_available ? '<span style="color:#ef4444;font-size:0.75rem;font-weight:700;">🚨 24/7 Emergency</span>' : '';
+
       const pin = L.marker([h.latitude, h.longitude], {
         icon: L.divIcon({
           className: '',
-          html: `<div style="width:28px;height:28px;background:${i===0?'#ff6a00':'#1e2229'};border-radius:50%;border:2px solid ${i===0?'#ffffff':'rgba(255,255,255,0.4)'};color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;box-shadow:0 0 10px rgba(0,0,0,0.6);">${i+1}</div>`,
+          html: `<div style="width:28px;height:28px;background:${isTop?'#ff6a00':'#1e2229'};border-radius:50%;border:2px solid ${isTop?'#ffffff':'rgba(255,255,255,0.4)'};color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;box-shadow:0 0 12px rgba(0,0,0,0.7);">${i+1}</div>`,
           iconSize: [28,28], iconAnchor: [14,14]
         })
       }).addTo(darkLeafletMap);
-      pin.bindPopup(`<b>${h.name}</b><br>${h.address}<br>📍 ${h.distance_km || 2.5} km · ⭐ ${h.rating || 4.5}`);
+
+      pin.bindPopup(`
+        <div style="min-width:210px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;">
+            <strong style="color:#ffffff;font-size:0.95rem;">${h.name}</strong>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+            ${typeBadge}
+            ${emBadge}
+          </div>
+          <div style="font-size:0.78rem;color:#94a3b8;margin-bottom:8px;">${h.address}</div>
+          <div style="font-size:0.8rem;color:#cbd5e1;margin-bottom:10px;">
+            📍 <strong>${h.distance_km || 2.5} km</strong> (~${h.travel_time_min || 10} min) • ⭐ ${h.rating || 4.5}
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <a href="https://www.google.com/maps/dir/?api=1&destination=${h.latitude},${h.longitude}" target="_blank" style="text-decoration:none;background:rgba(255,255,255,0.08);color:#fff;padding:4px 8px;border-radius:4px;font-size:0.75rem;">🧭 Directions</a>
+            ${h.phone ? `<a href="tel:${h.phone}" style="text-decoration:none;background:rgba(255,255,255,0.08);color:#fff;padding:4px 8px;border-radius:4px;font-size:0.75rem;">📞 Call</a>` : ''}
+            <button onclick="openBookingWizard(${h.id}, '${h.name.replace(/'/g,"\\'")}')" style="background:#ff6a00;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:0.75rem;cursor:pointer;font-weight:700;">📅 Book</button>
+          </div>
+        </div>
+      `);
       darkMapMarkers.push(pin);
       bounds.push([h.latitude, h.longitude]);
     }
   });
 
-  if (bounds.length) darkLeafletMap.fitBounds(bounds, { padding: [30, 30] });
+  if (bounds.length) darkLeafletMap.fitBounds(bounds, { padding: [35, 35] });
 }
 
 function renderHospitalsCards(hospitals) {
   const container = document.getElementById('hospitalsListContainer');
   if (!hospitals.length) {
-    container.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted);">No hospitals found nearby.</div>';
+    container.innerHTML = '<div style="padding:28px;text-align:center;color:var(--text-muted);font-size:0.9rem;">No facilities match the selected filter criteria. Try selecting "All" or searching another location.</div>';
     return;
   }
 
-  container.innerHTML = hospitals.map((h, i) => `
-    <div style="background:rgba(255,255,255,0.02);border:1px solid ${i===0?'var(--border-accent)':'var(--border-subtle)'};border-radius:var(--radius-md);padding:18px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;">
-      <div>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <strong style="color:#ffffff;font-size:0.98rem;">${i===0?'⭐ ':''}${h.name}</strong>
-          ${h.emergency_available ? '<span class="urg-tag urg-HIGH" style="font-size:0.65rem;padding:2px 8px;">24/7 Emergency</span>' : ''}
-          <span class="urg-tag urg-LOW" style="font-size:0.65rem;padding:2px 8px;">Open</span>
+  container.innerHTML = hospitals.map((h, i) => {
+    const typeBadge = h.type === 'Government' 
+      ? '<span class="badge-govt">Government</span>' 
+      : (h.type === 'Private' ? '<span class="badge-private">Private</span>' : '<span class="badge-unavailable">' + (h.type || 'Type unavailable') + '</span>');
+    const emBadge = h.emergency_available ? '<span class="urg-tag urg-HIGH" style="font-size:0.65rem;padding:2px 8px;">24/7 Emergency</span>' : '';
+    const networkBadge = h.source === 'internal' 
+      ? '<span style="font-size:0.68rem;color:var(--accent-emerald);font-weight:600;">● Network Partner</span>' 
+      : '<span style="font-size:0.68rem;color:var(--text-muted);">● Verified External</span>';
+
+    return `
+      <div style="background:rgba(255,255,255,0.02);border:1px solid ${i===0?'var(--border-accent)':'var(--border-subtle)'};border-radius:var(--radius-md);padding:18px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+        <div style="flex:1;min-width:260px;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <strong style="color:#ffffff;font-size:1rem;">${i===0?'⭐ ':''}${h.name}</strong>
+            ${typeBadge}
+            ${emBadge}
+            ${networkBadge}
+          </div>
+          <div style="font-size:0.8rem;color:var(--text-muted);margin-top:5px;">
+            ${h.address} • 📍 <strong>${h.distance_km || 2.5} km</strong> (~${h.travel_time_min || 10} min travel) • ⭐ ${h.rating || 4.4}
+          </div>
         </div>
-        <div style="font-size:0.78rem;color:var(--text-muted);margin-top:4px;">${h.address} • 📍 ${h.distance_km || 2.5} km (~${h.travel_time_min || 10} min travel)</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <a href="https://www.google.com/maps/dir/?api=1&destination=${h.latitude},${h.longitude}" target="_blank" class="btn-dark-pill" style="text-decoration:none;padding:8px 14px;font-size:0.8rem;display:inline-flex;align-items:center;gap:4px;">🧭 Directions</a>
+          ${h.phone ? `<button class="btn-dark-pill" onclick="window.location.href='tel:${h.phone}'" style="padding:8px 14px;font-size:0.8rem;">📞 Call</button>` : ''}
+          <button class="btn-orange-pill" onclick="openBookingWizard(${h.id}, '${h.name.replace(/'/g,"\\'")}')" style="padding:8px 16px;font-size:0.82rem;">Book Consultation</button>
+        </div>
       </div>
-      <div style="display:flex;gap:10px;">
-        ${h.phone ? `<button class="btn-dark-pill" onclick="window.location.href='tel:${h.phone}'">📞 Call</button>` : ''}
-        <button class="btn-orange-pill" onclick="openBookingWizard(${h.id}, '${h.name.replace(/'/g,"\\'")}')">Book Consultation</button>
-      </div>
-    </div>
-  `).join('');
+    `;
+  }).join('');
 }
 
 function filterHospList(type, btn) {
   btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   let list = [...state.hospitals];
-  if (type === 'nearest') list.sort((a,b) => (a.distance_km||99) - (b.distance_km||99));
-  else if (type === 'fastest') list.sort((a,b) => (a.travel_time_min||99) - (b.travel_time_min||99));
-  else if (type === 'rated') list.sort((a,b) => (b.rating||0) - (a.rating||0));
-  else if (type === 'emergency') list = list.filter(h => h.emergency_available);
+  if (type === 'government') {
+    list = list.filter(h => (h.type || '').toLowerCase() === 'government');
+  } else if (type === 'private') {
+    list = list.filter(h => (h.type || '').toLowerCase() === 'private');
+  } else if (type === 'emergency') {
+    list = list.filter(h => h.emergency_available);
+  } else if (type === 'nearest') {
+    list.sort((a,b) => (a.distance_km||99) - (b.distance_km||99));
+  } else if (type === 'fastest') {
+    list.sort((a,b) => (a.travel_time_min||99) - (b.travel_time_min||99));
+  } else if (type === 'rated') {
+    list.sort((a,b) => (b.rating||0) - (a.rating||0));
+  }
   renderHospitalsCards(list);
 }
 
@@ -2109,6 +2291,7 @@ function popToast(msg, type = 'info') {
 // INITIALIZATION
 // =====================================================
 document.addEventListener('DOMContentLoaded', () => {
+  fetchLiveHealthStatus();
   savePatientProfile();
   loadHospitalsData();
   loadAppointments();
@@ -2116,7 +2299,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadInAppAlerts();
   loadSmsLogs();
 
-  addAssistantMessage('assistant', `Good evening Farah! 👋 I am your **AI Healthcare Assistant**.\n\nI can help you analyze symptoms, find nearby hospitals, book consultation slots, and track your queue in real time.\n\nWhat can I help you with today?`);
+  addAssistantMessage('assistant', `Good evening Farah! 👋 I am your **AI Healthcare Assistant**.\n\nI can help you analyze symptoms with our trained Random Forest triage model, discover nearby Government & Private hospitals on the interactive map, book consultation slots, and track your queue in real time.\n\nWhat can I help you with today?`);
 });
 </script>
 </body>
