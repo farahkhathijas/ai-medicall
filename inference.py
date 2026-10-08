@@ -1,13 +1,18 @@
+import os
 import pickle
 import numpy as np
 
 # -----------------------------
-# Load model and encoder
+# Load model and encoder safely relative to current file
 # -----------------------------
-with open("models/triage_model.pkl", "rb") as f:
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "models", "triage_model.pkl")
+ENCODER_PATH = os.path.join(BASE_DIR, "models", "encoders.pkl")
+
+with open(MODEL_PATH, "rb") as f:
     model = pickle.load(f)
 
-with open("models/encoders.pkl", "rb") as f:
+with open(ENCODER_PATH, "rb") as f:
     encoder = pickle.load(f)
 
 # -----------------------------

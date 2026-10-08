@@ -1325,12 +1325,37 @@ body {
 <!-- Toast Container -->
 <div class="toast-container" id="toastContainer"></div>
 
+<script type="module">
+  // Bridge Vite environment variables into runtime state
+  window.__ENV__ = {
+    VITE_API_URL: (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_URL) 
+      ? import.meta.env.VITE_API_URL 
+      : ''
+  };
+</script>
+
 <script>
 // =====================================================
 // GLOBAL API & REACTIVE STATE
 // =====================================================
-const API = (window.location.origin && !window.location.origin.startsWith('file:') && !window.location.origin.includes('null'))
-  ? window.location.origin : 'http://localhost:9000';
+function getApiBaseUrl() {
+  if (window.__ENV__ && window.__ENV__.VITE_API_URL) {
+    return window.__ENV__.VITE_API_URL.replace(/\/$/, '');
+  }
+  const metaApi = document.querySelector('meta[name="api-base-url"]');
+  if (metaApi && metaApi.content) {
+    return metaApi.content.replace(/\/$/, '');
+  }
+  if (window.location.origin && !window.location.origin.startsWith('file:') && !window.location.origin.includes('null')) {
+    if (window.location.port === '5173' || window.location.port === '8080' || window.location.port === '4173') {
+      return 'http://localhost:9000';
+    }
+    return window.location.origin;
+  }
+  return 'http://localhost:9000';
+}
+
+const API = getApiBaseUrl();
 const SID = 'sess_' + Date.now();
 
 let state = {
@@ -2065,19 +2090,43 @@ async function triggerAdvanceQueue(aptId) {
   } catch(e){}
 }
 
+let liveQueuePollTimer = null;
+function startQueuePollingFallback(aptId) {
+  if (liveQueuePollTimer) clearInterval(liveQueuePollTimer);
+  liveQueuePollTimer = setInterval(() => {
+    if (state.currentAppointment && state.currentAppointment.id === aptId) {
+      loadLiveQueue();
+    } else {
+      clearInterval(liveQueuePollTimer);
+    }
+  }, 10000);
+}
+
 function connectLiveQueueWebSocket(aptId) {
-  const wsUrl = API.replace('http','ws') + `/ws/queue/${aptId}`;
+  if (!API || !API.startsWith('http')) return;
+  const wsUrl = API.replace(/^http/i, 'ws') + `/ws/queue/${aptId}`;
   try {
+    if (wsLiveQueue) {
+      try { wsLiveQueue.close(); } catch(e){}
+    }
     wsLiveQueue = new WebSocket(wsUrl);
     wsLiveQueue.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
-      if (msg.type === 'queue_update' || msg.type === 'queue_advance') {
-        state.queueData = msg.data;
-        if (msg.data.timeline) state.queueTimeline = msg.data.timeline;
-        renderLiveQueueDashboard();
-      }
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'queue_update' || msg.type === 'queue_advance') {
+          state.queueData = msg.data;
+          if (msg.data.timeline) state.queueTimeline = msg.data.timeline;
+          renderLiveQueueDashboard();
+        }
+      } catch(err){}
     };
-  } catch(e){}
+    wsLiveQueue.onerror = () => {
+      // Seamlessly fall back to interval polling if WebSockets are unavailable
+      startQueuePollingFallback(aptId);
+    };
+  } catch(e){
+    startQueuePollingFallback(aptId);
+  }
 }
 
 // =====================================================

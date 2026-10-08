@@ -55,9 +55,30 @@ else:
 
 app = FastAPI(title="Agentic Medical Analyser - Intelligent Healthcare Assistant")
 
+# Setup production-grade CORS supporting local dev and Vercel deployments
+frontend_url_env = os.getenv("FRONTEND_URL", "").strip()
+allowed_origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:8080",
+    "http://localhost:9000",
+    "http://localhost:8000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:8080",
+    "http://127.0.0.1:9000",
+    "http://127.0.0.1:8000",
+]
+if frontend_url_env:
+    for url in frontend_url_env.split(","):
+        cleaned = url.strip().rstrip("/")
+        if cleaned and cleaned not in allowed_origins:
+            allowed_origins.append(cleaned)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"^https:\/\/.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -312,20 +333,23 @@ if embedder:
     case_index.add(np.array(train_embeddings))
 
 classifier = None
-if os.path.exists("models/trained_model/classifier.pkl"):
+classifier_path = os.path.join(BASE_DIR, "models", "trained_model", "classifier.pkl")
+if os.path.exists(classifier_path):
     try:
-        classifier = joblib.load("models/trained_model/classifier.pkl")
-    except Exception:
-        print("Could not load classifier.pkl")
+        classifier = joblib.load(classifier_path)
+    except Exception as e:
+        print(f"Could not load classifier.pkl: {e}")
 
 triage_model = None
 triage_encoder = None
 try:
     import pickle
-    if os.path.exists("models/triage_model.pkl") and os.path.exists("models/encoders.pkl"):
-        with open("models/triage_model.pkl", "rb") as f:
+    triage_model_path = os.path.join(BASE_DIR, "models", "triage_model.pkl")
+    triage_encoder_path = os.path.join(BASE_DIR, "models", "encoders.pkl")
+    if os.path.exists(triage_model_path) and os.path.exists(triage_encoder_path):
+        with open(triage_model_path, "rb") as f:
             triage_model = pickle.load(f)
-        with open("models/encoders.pkl", "rb") as f:
+        with open(triage_encoder_path, "rb") as f:
             triage_encoder = pickle.load(f)
         print("Triage Risk Model Loaded")
 except Exception as e:
@@ -2357,17 +2381,26 @@ if __name__ == "__main__":
     import uvicorn
     import socket
 
-    def is_port_in_use(port):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            return s.connect_ex(('localhost', port)) == 0
-
-    ports_to_try = [9000, 8010, 8011, 8012, 8013, 8014, 8015]
-    for port in ports_to_try:
+    port_env = os.getenv("PORT")
+    if port_env:
         try:
-            if is_port_in_use(port):
-                print(f"Port {port} is busy.")
-                continue
-            uvicorn.run("main_combined:app", host="0.0.0.0", port=port, reload=False)
-            break
+            prod_port = int(port_env)
+            print(f"Starting production server on assigned PORT: {prod_port}")
+            uvicorn.run("main_combined:app", host="0.0.0.0", port=prod_port, reload=False)
         except Exception as e:
-            print(f"Failed on port {port}: {e}")
+            print(f"Error starting on PORT {port_env}: {e}")
+    else:
+        def is_port_in_use(port):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                return s.connect_ex(('localhost', port)) == 0
+
+        ports_to_try = [9000, 8010, 8011, 8012, 8013, 8014, 8015]
+        for port in ports_to_try:
+            try:
+                if is_port_in_use(port):
+                    print(f"Port {port} is busy.")
+                    continue
+                uvicorn.run("main_combined:app", host="0.0.0.0", port=port, reload=False)
+                break
+            except Exception as e:
+                print(f"Failed on port {port}: {e}")

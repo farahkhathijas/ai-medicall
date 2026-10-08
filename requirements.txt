@@ -14,3 +14,5 @@ faiss-cpu
 # torch is usually installed via sentence-transformers, but explicit is safer
 torch
 transformers
+websockets
+python-multipart

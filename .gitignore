@@ -28,6 +28,7 @@ htmlcov/
 .env
 .env.local
 .env.*.local
+API_KEY
 
 # Frontend / Node
 node_modules/
